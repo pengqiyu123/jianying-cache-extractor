@@ -1,4 +1,5 @@
 import os
+import time
 from pathlib import Path
 
 from jianying_controller.models import CacheOrigin, CandidateStatus, SourceMode
@@ -13,8 +14,9 @@ def touch(path: Path, content: bytes = b"x", mtime: int = 1_700_000_000):
 
 def test_resolve_project_scans_cloud_cache_without_requiring_jianying_running(tmp_path, monkeypatch):
     project = tmp_path / "项目A"
-    touch(project / "draft_content.json", b"encrypted", 900)
-    touch(project / "Resources" / "combination" / "broken_video.mp4", b"blob", 800)
+    now = int(time.time())
+    touch(project / "draft_content.json", b"encrypted", now - 60)
+    touch(project / "Resources" / "combination" / "broken_video.mp4", b"blob", now - 90)
     valid = (
         tmp_path
         / ".cloud_cache_123"
@@ -23,7 +25,7 @@ def test_resolve_project_scans_cloud_cache_without_requiring_jianying_running(tm
         / "combination"
         / "valid_video.mp4"
     )
-    touch(valid, b"mp4", 700)
+    touch(valid, b"mp4", now - 120)
 
     monkeypatch.setattr(
         "jianying_controller.media_validator.inspect_video",
@@ -38,9 +40,27 @@ def test_resolve_project_scans_cloud_cache_without_requiring_jianying_running(tm
     assert source.available_candidates[0].origin == CacheOrigin.CLOUD_CACHE
 
 
+def test_resolve_project_filters_candidates_to_recent_half_hour(tmp_path, monkeypatch):
+    project = tmp_path / "项目A"
+    now = int(time.time())
+    recent = project / "Resources" / "combination" / "recent_video.mp4"
+    old = project / "Resources" / "combination" / "old_video.mp4"
+    touch(recent, b"recent", now - 60)
+    touch(old, b"old", now - 31 * 60)
+
+    monkeypatch.setattr(
+        "jianying_controller.media_validator.inspect_video",
+        lambda path: (1920, 1080, 1000.0),
+    )
+
+    source = resolve_project(project, draft_root=tmp_path)
+
+    assert [candidate.path.name for candidate in source.candidates] == ["recent_video.mp4"]
+
+
 def test_resolve_mp4_builds_manual_candidate(tmp_path, monkeypatch):
     media = tmp_path / "manual.mp4"
-    touch(media, b"mp4")
+    touch(media, b"mp4", int(time.time()) - 31 * 60)
     monkeypatch.setattr(
         "jianying_controller.media_validator.inspect_video",
         lambda path: (1280, 720, 5000.0),

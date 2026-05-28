@@ -1,6 +1,7 @@
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, "src")
@@ -28,11 +29,12 @@ def touch(path: Path, content: bytes = b"x", mtime: int = 1_700_000_000):
 def test_find_combination_mp4s_filters_and_sorts(tmp_path):
     project = tmp_path / "draft"
     combo = project / "Resources" / "combination"
-    touch(combo / "old_video.mp4", b"old", 100)
-    touch(combo / "new_video.mp4", b"new", 200)
-    touch(combo / "new_video.alpha.mp4", b"alpha", 300)
-    touch(combo / "empty_video.mp4", b"", 400)
-    touch(combo / "note.txt", b"text", 500)
+    now = int(time.time())
+    touch(combo / "old_video.mp4", b"old", now - 120)
+    touch(combo / "new_video.mp4", b"new", now - 60)
+    touch(combo / "new_video.alpha.mp4", b"alpha", now - 30)
+    touch(combo / "empty_video.mp4", b"", now - 20)
+    touch(combo / "note.txt", b"text", now - 10)
 
     files = find_combination_mp4s(project, require_video=False)
 
@@ -40,10 +42,22 @@ def test_find_combination_mp4s_filters_and_sorts(tmp_path):
     assert files[0].size_bytes == 3
 
 
+def test_find_combination_mp4s_only_returns_recent_cache_files(tmp_path):
+    project = tmp_path / "draft"
+    combo = project / "Resources" / "combination"
+    now = int(time.time())
+    touch(combo / "recent_video.mp4", b"recent", now - 60)
+    touch(combo / "old_video.mp4", b"old", now - 31 * 60)
+
+    files = find_combination_mp4s(project, require_video=False)
+
+    assert [f.path.name for f in files] == ["recent_video.mp4"]
+
+
 def test_find_combination_mp4s_requires_video_by_default(tmp_path):
     project = tmp_path / "draft"
     combo = project / "Resources" / "combination"
-    touch(combo / "cache_video.mp4", b"not a real mp4", 100)
+    touch(combo / "cache_video.mp4", b"not a real mp4", int(time.time()) - 60)
 
     assert find_combination_mp4s(project) == []
 
@@ -51,9 +65,10 @@ def test_find_combination_mp4s_requires_video_by_default(tmp_path):
 def test_detect_active_project_requires_running_and_combination(tmp_path, monkeypatch):
     active = tmp_path / "Active"
     inactive = tmp_path / "Inactive"
-    touch(active / "draft_content.json", b"encrypted", 500)
-    touch(active / "Resources" / "combination" / "cache_video.mp4", b"cache", 400)
-    touch(inactive / "draft_content.json", b"encrypted", 600)
+    now = int(time.time())
+    touch(active / "draft_content.json", b"encrypted", now - 60)
+    touch(active / "Resources" / "combination" / "cache_video.mp4", b"cache", now - 90)
+    touch(inactive / "draft_content.json", b"encrypted", now - 30)
 
     import jianying_controller.cache_extractor as cache_extractor
 
@@ -71,8 +86,9 @@ def test_detect_active_project_requires_running_and_combination(tmp_path, monkey
 
 def test_detect_active_project_uses_cloud_cache_mirror(tmp_path, monkeypatch):
     active = tmp_path / "5月28日 (1)-副本"
-    touch(active / "draft_content.json", b"encrypted", 900)
-    touch(active / "Resources" / "combination" / "broken_video.mp4", b"not mp4", 800)
+    now = int(time.time())
+    touch(active / "draft_content.json", b"encrypted", now - 60)
+    touch(active / "Resources" / "combination" / "broken_video.mp4", b"not mp4", now - 90)
     mirror_cache = (
         tmp_path
         / ".cloud_cache_1544148301652168"
@@ -81,7 +97,7 @@ def test_detect_active_project_uses_cloud_cache_mirror(tmp_path, monkeypatch):
         / "combination"
         / "valid_video.mp4"
     )
-    touch(mirror_cache, b"valid", 700)
+    touch(mirror_cache, b"valid", now - 120)
 
     import jianying_controller.cache_extractor as cache_extractor
 

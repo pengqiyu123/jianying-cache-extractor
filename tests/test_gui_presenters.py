@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from jianying_controller.gui import build_request, candidate_row, status_label
+from jianying_controller.gui import build_request, candidate_row, empty_state_message, status_label
 from jianying_controller.models import CacheOrigin, CandidateStatus, MediaCandidate, SourceMode
 
 
@@ -65,3 +65,7 @@ def test_build_request_supports_three_modes():
 def test_status_label_is_truthful():
     assert status_label("draft_created") == "草稿已创建，请回到剪映首页查看。"
     assert "导出" not in status_label("draft_created")
+
+
+def test_empty_state_mentions_recent_window_for_project_cache():
+    assert "最近半小时" in empty_state_message(SourceMode.PROJECT, [])

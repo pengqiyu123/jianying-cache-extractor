@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from pathlib import Path
+import time
 
+from .cache_extractor import RECENT_CACHE_WINDOW_SECONDS
 from .env import JianYingEnv
 from .media_validator import validate_media_file
 from .models import (
@@ -86,7 +88,13 @@ def _scan_project(project: Path, origin: CacheOrigin, source_project_name: str) 
         return []
 
     candidates: list[MediaCandidate] = []
+    min_mtime = time.time() - RECENT_CACHE_WINDOW_SECONDS
     for media_path in combination_dir.glob("*.mp4"):
+        try:
+            if media_path.stat().st_mtime < min_mtime:
+                continue
+        except OSError:
+            continue
         validation = validate_media_file(media_path)
         candidates.append(
             _candidate_from_validation(

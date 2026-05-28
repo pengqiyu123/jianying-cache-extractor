@@ -65,7 +65,7 @@ PROCESS_LABELS = {
 
 EMPTY_STATE_BY_MODE = {
     SourceMode.AUTO: "没有找到最近活跃的剪映项目，请手动选择项目。",
-    SourceMode.PROJECT: "这个项目还没有可用的复合片段缓存。请在剪映中完成预合成后重试。",
+    SourceMode.PROJECT: "最近半小时内没有可用的复合片段缓存。请在剪映中完成预合成后重试。",
     SourceMode.MP4: "请选择一个可导入的 MP4 文件。",
 }
 
@@ -203,7 +203,7 @@ def empty_state_message(
     if any(candidate.status == CandidateStatus.WRITING for candidate in candidate_list):
         return "缓存文件仍在生成，请稍后重新检测。"
     if any(candidate.status == CandidateStatus.REJECTED for candidate in candidate_list):
-        return "这个项目还没有可用的复合片段缓存。请在剪映中完成预合成后重试。"
+        return "最近半小时内找到缓存文件，但都不是可导入视频。请完成预合成后重新检测。"
     return EMPTY_STATE_BY_MODE[source_mode]
 
 

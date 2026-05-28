@@ -5,8 +5,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import time
 
 from .media_validator import inspect_video
+
+
+RECENT_CACHE_WINDOW_SECONDS = 30 * 60
 
 
 @dataclass(frozen=True)
@@ -19,7 +23,12 @@ class CacheFile:
     duration_ms: float | None = None
 
 
-def find_combination_mp4s(project_path: str | Path, *, require_video: bool = True) -> list[CacheFile]:
+def find_combination_mp4s(
+    project_path: str | Path,
+    *,
+    require_video: bool = True,
+    recent_seconds: int | None = RECENT_CACHE_WINDOW_SECONDS,
+) -> list[CacheFile]:
     """Return combination MP4 caches sorted newest first.
 
     JianYing stores pre-rendered compound clip output under
@@ -36,6 +45,7 @@ def find_combination_mp4s(project_path: str | Path, *, require_video: bool = Tru
         return []
 
     files: list[CacheFile] = []
+    min_mtime = time.time() - recent_seconds if recent_seconds is not None else None
     for path in combination_dir.glob("*.mp4"):
         if path.name.lower().endswith(".alpha.mp4"):
             continue
@@ -44,6 +54,8 @@ def find_combination_mp4s(project_path: str | Path, *, require_video: bool = Tru
         except OSError:
             continue
         if stat.st_size <= 0:
+            continue
+        if min_mtime is not None and stat.st_mtime < min_mtime:
             continue
         video_info = inspect_video(path)
         if require_video and video_info is None:
