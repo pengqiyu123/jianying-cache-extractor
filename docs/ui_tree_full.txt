@@ -1,0 +1,19 @@
+# JianYing UI full tree
+
+Process status: ProcessStatus.RUNNING
+
+## Home
+
+- #0 WindowControl | name='剪映专业版' | aid='HomeWindow' | class='HomePage_QMLTYPE_181' | rect=550,203,2010,1178 | enabled=True | offscreen=False | path=0
+
+## Home Raw View
+
+- #0 WindowControl | name='剪映专业版' | aid='HomeWindow' | class='HomePage_QMLTYPE_181' | rect=550,203,2010,1178 | enabled=True | offscreen=False | path=0
+
+## Home Win32 Children
+
+(no Win32 child windows found)
+
+## Home MSAA
+
+- #0 role='窗口' name='剪映专业版' state='可设定焦点' child_id=0
