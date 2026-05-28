@@ -4,6 +4,7 @@ __pycache__/
 *$py.class
 .pytest_cache/
 .pytest_tmp/
+.run/
 
 # Virtual environments
 .venv/
@@ -26,4 +27,3 @@ env/
 *.mov
 *.avi
 *.mkv
-
