@@ -63,6 +63,11 @@ def detect_active_project(
         return None
 
     cache_mirrors = [item for item in root.iterdir() if item.is_dir() and item.name.startswith(".cloud_cache_")]
+    root_project_names = {
+        item.name
+        for item in root.iterdir()
+        if item.is_dir() and not item.name.startswith(".")
+    }
 
     candidates: list[ActiveProject] = []
     for project in root.iterdir():
@@ -107,6 +112,32 @@ def detect_active_project(
                 caches=caches,
             )
         )
+
+    for mirror_root in cache_mirrors:
+        for mirror_project in mirror_root.iterdir():
+            if not mirror_project.is_dir() or mirror_project.name in root_project_names:
+                continue
+            caches = find_combination_mp4s(mirror_project)
+            if not caches:
+                caches = find_combination_mp4s(mirror_project, require_video=False)
+            if not caches:
+                continue
+            last_modified = project_last_modified(mirror_project)
+            if last_modified is None:
+                try:
+                    last_modified = datetime.fromtimestamp(mirror_project.stat().st_mtime)
+                except OSError:
+                    continue
+            candidates.append(
+                ActiveProject(
+                    name=mirror_project.name,
+                    path=mirror_project,
+                    combination_dir=mirror_project / "Resources" / "combination",
+                    latest_mp4=caches[0].path,
+                    last_modified=last_modified,
+                    caches=caches,
+                )
+            )
 
     if not candidates:
         return None

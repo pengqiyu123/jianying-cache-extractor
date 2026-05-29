@@ -40,6 +40,40 @@ def test_resolve_project_scans_cloud_cache_without_requiring_jianying_running(tm
     assert source.available_candidates[0].origin == CacheOrigin.CLOUD_CACHE
 
 
+def test_resolve_project_selected_cloud_cache_folder_marks_cloud_origin(tmp_path, monkeypatch):
+    mirror_project = tmp_path / ".cloud_cache_123" / "项目A"
+    now = int(time.time())
+    valid = mirror_project / "Resources" / "combination" / "valid_video.mp4"
+    touch(valid, b"mp4", now - 60)
+
+    monkeypatch.setattr(
+        "jianying_controller.media_validator.inspect_video",
+        lambda path: (1920, 1080, 1000.0),
+    )
+
+    source = resolve_project(mirror_project, draft_root=tmp_path)
+
+    assert source.source_name == "项目A"
+    assert [candidate.path for candidate in source.available_candidates] == [valid]
+    assert source.available_candidates[0].origin == CacheOrigin.CLOUD_CACHE
+
+
+def test_resolve_project_selected_cloud_cache_folder_allows_historical_cache(tmp_path, monkeypatch):
+    mirror_project = tmp_path / ".cloud_cache_123" / "项目A"
+    old_valid = mirror_project / "Resources" / "combination" / "old_valid_video.mp4"
+    touch(old_valid, b"mp4", int(time.time()) - 31 * 60)
+
+    monkeypatch.setattr(
+        "jianying_controller.media_validator.inspect_video",
+        lambda path: (1920, 1080, 1000.0),
+    )
+
+    source = resolve_project(mirror_project, draft_root=tmp_path)
+
+    assert [candidate.path for candidate in source.available_candidates] == [old_valid]
+    assert source.available_candidates[0].origin == CacheOrigin.CLOUD_CACHE
+
+
 def test_resolve_project_filters_candidates_to_recent_half_hour(tmp_path, monkeypatch):
     project = tmp_path / "项目A"
     now = int(time.time())

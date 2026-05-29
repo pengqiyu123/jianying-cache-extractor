@@ -40,16 +40,24 @@ def resolve_project(project_path: str | Path, *, draft_root: str | Path | None =
     if not project.is_dir():
         raise WorkflowError("project_not_found", f"项目目录不存在: {project}")
 
-    root = Path(draft_root) if draft_root is not None else project.parent
-    candidates = _scan_project(project, CacheOrigin.PROJECT, project.name)
+    is_cloud_cache_project = _is_cloud_cache_project(project)
+    root = Path(draft_root) if draft_root is not None else _default_draft_root(project)
+    origin = CacheOrigin.CLOUD_CACHE if is_cloud_cache_project else CacheOrigin.PROJECT
+    selected_recent_seconds = None if is_cloud_cache_project else RECENT_CACHE_WINDOW_SECONDS
+    candidates = _scan_project(project, origin, project.name, recent_seconds=selected_recent_seconds)
+    seen_paths = {candidate.path for candidate in candidates}
 
-    if root.is_dir():
+    if root.is_dir() and not is_cloud_cache_project:
         for mirror_root in sorted(root.iterdir(), key=lambda item: item.name):
             if not mirror_root.is_dir() or not mirror_root.name.startswith(".cloud_cache_"):
                 continue
             mirror_project = mirror_root / project.name
             if mirror_project.is_dir():
-                candidates.extend(_scan_project(mirror_project, CacheOrigin.CLOUD_CACHE, project.name))
+                for candidate in _scan_project(mirror_project, CacheOrigin.CLOUD_CACHE, project.name):
+                    if candidate.path in seen_paths:
+                        continue
+                    seen_paths.add(candidate.path)
+                    candidates.append(candidate)
 
     return ResolvedSource(
         mode=SourceMode.PROJECT,
@@ -58,6 +66,16 @@ def resolve_project(project_path: str | Path, *, draft_root: str | Path | None =
         candidates=_sort_candidates(candidates),
         warnings=[],
     )
+
+
+def _is_cloud_cache_project(project: Path) -> bool:
+    return project.parent.name.startswith(".cloud_cache_")
+
+
+def _default_draft_root(project: Path) -> Path:
+    if _is_cloud_cache_project(project):
+        return project.parent.parent
+    return project.parent
 
 
 def resolve_mp4(mp4_path: str | Path, *, source_name: str | None = None) -> ResolvedSource:
@@ -82,16 +100,22 @@ def resolve_mp4(mp4_path: str | Path, *, source_name: str | None = None) -> Reso
     )
 
 
-def _scan_project(project: Path, origin: CacheOrigin, source_project_name: str) -> list[MediaCandidate]:
+def _scan_project(
+    project: Path,
+    origin: CacheOrigin,
+    source_project_name: str,
+    *,
+    recent_seconds: int | None = RECENT_CACHE_WINDOW_SECONDS,
+) -> list[MediaCandidate]:
     combination_dir = project / "Resources" / "combination"
     if not combination_dir.is_dir():
         return []
 
     candidates: list[MediaCandidate] = []
-    min_mtime = time.time() - RECENT_CACHE_WINDOW_SECONDS
+    min_mtime = time.time() - recent_seconds if recent_seconds is not None else None
     for media_path in combination_dir.glob("*.mp4"):
         try:
-            if media_path.stat().st_mtime < min_mtime:
+            if min_mtime is not None and media_path.stat().st_mtime < min_mtime:
                 continue
         except OSError:
             continue

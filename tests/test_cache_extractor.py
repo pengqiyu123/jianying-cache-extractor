@@ -128,6 +128,25 @@ def test_detect_active_project_uses_cloud_cache_mirror(tmp_path, monkeypatch):
     assert result.latest_mp4 == mirror_cache
 
 
+def test_detect_active_project_includes_cloud_only_mirror_project(tmp_path, monkeypatch):
+    mirror_project = tmp_path / ".cloud_cache_1544148301652168" / "5月28日 (1)-副本"
+    now = int(time.time())
+    touch(mirror_project / "draft_content.json", b"encrypted", now - 60)
+    mirror_cache = mirror_project / "Resources" / "combination" / "valid_video.mp4"
+    touch(mirror_cache, b"valid", now - 90)
+
+    import jianying_controller.cache_extractor as cache_extractor
+
+    monkeypatch.setattr(cache_extractor, "inspect_video", lambda path: (1920, 1080, 1000))
+
+    result = detect_active_project(tmp_path, process=StubProcess(ProcessStatus.RUNNING))
+
+    assert result is not None
+    assert result.name == mirror_project.name
+    assert result.path == mirror_project
+    assert result.latest_mp4 == mirror_cache
+
+
 def test_create_extracted_draft_copies_mp4_and_writes_draft(tmp_path, monkeypatch):
     source = tmp_path / "source.mp4"
     touch(source, b"fake mp4 bytes", 100)
