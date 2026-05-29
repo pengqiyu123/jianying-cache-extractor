@@ -89,6 +89,16 @@ def test_empty_state_mp4_rejected_shows_specific_reason():
     assert "最近半小时" not in message
 
 
+def test_empty_state_project_rejected_shows_specific_reason():
+    message = empty_state_message(
+        SourceMode.PROJECT,
+        [make_candidate(status=CandidateStatus.REJECTED, rejection_reason="no_video_track")],
+    )
+
+    assert "最近半小时" in message
+    assert "无视频轨" in message
+
+
 def test_process_labels_distinguish_visible_window_from_background_process():
     assert PROCESS_LABELS["running"] == "已打开"
     assert PROCESS_LABELS["background"] == "后台运行"

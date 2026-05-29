@@ -80,6 +80,16 @@ def detect_active_project(
                     cache_source_dir = mirror_project
                     break
         if not caches:
+            caches = find_combination_mp4s(project, require_video=False)
+            cache_source_dir = project
+        if not caches:
+            for mirror_root in cache_mirrors:
+                mirror_project = mirror_root / project.name
+                caches = find_combination_mp4s(mirror_project, require_video=False)
+                if caches:
+                    cache_source_dir = mirror_project
+                    break
+        if not caches:
             continue
         last_modified = project_last_modified(project)
         if last_modified is None:

@@ -84,6 +84,20 @@ def test_detect_active_project_requires_running_and_combination(tmp_path, monkey
     assert stopped is None
 
 
+def test_detect_active_project_keeps_recent_project_even_when_cache_is_not_importable(tmp_path):
+    active = tmp_path / "Active"
+    now = int(time.time())
+    touch(active / "draft_content.json", b"encrypted", now - 60)
+    cache = active / "Resources" / "combination" / "cache_video.mp4"
+    touch(cache, b"not a standard mp4", now - 90)
+
+    result = detect_active_project(tmp_path, process=StubProcess(ProcessStatus.RUNNING))
+
+    assert result is not None
+    assert result.name == "Active"
+    assert result.latest_mp4 == cache
+
+
 def test_detect_active_project_uses_cloud_cache_mirror(tmp_path, monkeypatch):
     active = tmp_path / "5月28日 (1)-副本"
     now = int(time.time())

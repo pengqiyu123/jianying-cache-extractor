@@ -210,8 +210,24 @@ def empty_state_message(
             rejected = next(candidate for candidate in candidate_list if candidate.status == CandidateStatus.REJECTED)
             reason = REJECTION_LABELS.get(rejected.rejection_reason or "", rejected.rejection_reason or "不可导入")
             return f"此 MP4 不可导入：{reason}。请重新选择一个标准 MP4 文件。"
+        reasons = _rejection_summary(candidate_list)
+        if reasons:
+            return f"最近半小时内找到缓存文件，但都不是可导入视频：{reasons}。请完成预合成后重新检测。"
         return "最近半小时内找到缓存文件，但都不是可导入视频。请完成预合成后重新检测。"
     return EMPTY_STATE_BY_MODE[source_mode]
+
+
+def _rejection_summary(candidates: Iterable[MediaCandidate]) -> str:
+    labels: list[str] = []
+    for candidate in candidates:
+        if candidate.status != CandidateStatus.REJECTED or not candidate.rejection_reason:
+            continue
+        label = REJECTION_LABELS.get(candidate.rejection_reason, candidate.rejection_reason)
+        if label not in labels:
+            labels.append(label)
+        if len(labels) >= 3:
+            break
+    return "、".join(labels)
 
 
 def safe_error_message(exc: Exception) -> str:
