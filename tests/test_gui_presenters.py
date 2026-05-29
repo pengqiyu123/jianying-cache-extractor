@@ -1,7 +1,7 @@
 from datetime import datetime
 from pathlib import Path
 
-from jianying_controller.gui import build_request, candidate_row, empty_state_message, status_label
+from jianying_controller.gui import PROCESS_LABELS, build_request, candidate_row, empty_state_message, status_label
 from jianying_controller.models import CacheOrigin, CandidateStatus, MediaCandidate, SourceMode
 
 
@@ -69,3 +69,26 @@ def test_status_label_is_truthful():
 
 def test_empty_state_mentions_recent_window_for_project_cache():
     assert "最近半小时" in empty_state_message(SourceMode.PROJECT, [])
+
+
+def test_empty_state_auto_after_exit_prefers_manual_guidance():
+    message = empty_state_message(SourceMode.AUTO, error_code="no_active_project", process_status="background")
+
+    assert "未检测到剪映运行" in message
+    assert "手动选择项目或 MP4" in message
+    assert "最近活跃" not in message
+
+
+def test_empty_state_mp4_rejected_shows_specific_reason():
+    message = empty_state_message(
+        SourceMode.MP4,
+        [make_candidate(status=CandidateStatus.REJECTED, rejection_reason="no_video_track")],
+    )
+
+    assert "无视频轨" in message
+    assert "最近半小时" not in message
+
+
+def test_process_labels_distinguish_visible_window_from_background_process():
+    assert PROCESS_LABELS["running"] == "已打开"
+    assert PROCESS_LABELS["background"] == "后台运行"

@@ -1,7 +1,8 @@
 """Manage JianYing Pro process: launch, exit, status."""
 
+import csv
+import ctypes
 import os
-import signal
 import subprocess
 import time
 from enum import Enum
@@ -15,6 +16,7 @@ class ProcessStatus(str, Enum):
     STOPPED = "stopped"
     STARTING = "starting"
     RUNNING = "running"
+    BACKGROUND = "background"
     TRAY_ONLY = "tray_only"
 
 
@@ -29,26 +31,70 @@ class JianYingProcess:
     def status(self) -> ProcessStatus:
         """Check current JianYing process status."""
         try:
-            result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq JianyingPro.exe"],
-                capture_output=True, text=True, timeout=5,
-            )
-            main_running = "JianyingPro.exe" in result.stdout
+            main_process_ids = self._process_ids("JianyingPro.exe")
+            tray_process_ids = self._process_ids("JianyingProTray.exe")
 
-            tray_result = subprocess.run(
-                ["tasklist", "/FI", "IMAGENAME eq JianyingProTray.exe"],
-                capture_output=True, text=True, timeout=5,
-            )
-            tray_running = "JianyingProTray.exe" in tray_result.stdout
-
-            if main_running:
-                return ProcessStatus.RUNNING
-            elif tray_running:
+            if main_process_ids:
+                if self._has_visible_window(main_process_ids):
+                    return ProcessStatus.RUNNING
+                return ProcessStatus.BACKGROUND
+            elif tray_process_ids:
                 return ProcessStatus.TRAY_ONLY
             else:
                 return ProcessStatus.STOPPED
         except FileNotFoundError:
             return ProcessStatus.NOT_INSTALLED
+
+    def _process_ids(self, image_name: str) -> list[int]:
+        """Return process IDs for an executable image name."""
+        result = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {image_name}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        process_ids: list[int] = []
+        for row in csv.reader(result.stdout.splitlines()):
+            if len(row) < 2 or row[0].lower() != image_name.lower():
+                continue
+            try:
+                process_ids.append(int(row[1]))
+            except ValueError:
+                continue
+        return process_ids
+
+    def _has_visible_window(self, process_ids: list[int]) -> bool:
+        """Return True when any process owns a visible, titled window."""
+        if not process_ids:
+            return False
+        if os.name != "nt":
+            return True
+
+        try:
+            user32 = ctypes.windll.user32
+            from ctypes import wintypes
+        except Exception:
+            return True
+
+        target_ids = set(process_ids)
+        found = False
+
+        @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def enum_callback(hwnd, _lparam):
+            nonlocal found
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in target_ids and user32.IsWindowVisible(hwnd):
+                if user32.GetWindowTextLengthW(hwnd) > 0:
+                    found = True
+                    return False
+            return True
+
+        try:
+            user32.EnumWindows(enum_callback, 0)
+        except Exception:
+            return True
+        return found
 
     def launch(self, wait: bool = True, timeout: Optional[int] = None) -> ProcessStatus:
         """Launch JianYing Pro.

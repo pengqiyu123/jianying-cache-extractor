@@ -59,7 +59,8 @@ PROCESS_LABELS = {
     "not_installed": "未安装",
     "stopped": "未运行",
     "starting": "启动中",
-    "running": "运行中",
+    "running": "已打开",
+    "background": "后台运行",
     "tray_only": "仅托盘",
 }
 
@@ -194,15 +195,21 @@ def empty_state_message(
     except ValueError:
         source_mode = SourceMode.AUTO
 
-    if source_mode == SourceMode.AUTO and process_status in {"not_installed", "stopped", "tray_only"}:
-        return "未检测到剪映运行。仍可手动选择项目或 MP4。"
+    if source_mode == SourceMode.AUTO and process_status in {"not_installed", "stopped", "tray_only", "background"}:
+        return "未检测到剪映运行主窗口。仍可手动选择项目或 MP4。"
     if error_code in EMPTY_STATE_BY_ERROR:
         return EMPTY_STATE_BY_ERROR[error_code]
 
     candidate_list = list(candidates or [])
     if any(candidate.status == CandidateStatus.WRITING for candidate in candidate_list):
+        if source_mode == SourceMode.MP4:
+            return "此 MP4 仍在写入，请稍后重试。"
         return "缓存文件仍在生成，请稍后重新检测。"
     if any(candidate.status == CandidateStatus.REJECTED for candidate in candidate_list):
+        if source_mode == SourceMode.MP4:
+            rejected = next(candidate for candidate in candidate_list if candidate.status == CandidateStatus.REJECTED)
+            reason = REJECTION_LABELS.get(rejected.rejection_reason or "", rejected.rejection_reason or "不可导入")
+            return f"此 MP4 不可导入：{reason}。请重新选择一个标准 MP4 文件。"
         return "最近半小时内找到缓存文件，但都不是可导入视频。请完成预合成后重新检测。"
     return EMPTY_STATE_BY_MODE[source_mode]
 
@@ -614,6 +621,8 @@ class CacheExtractorApp(tk.Tk):
         self._set_busy(None)
         self.create_button.configure(state=tk.DISABLED)
         process_status = self.process.status().value
+        self.process_var.set(PROCESS_LABELS.get(process_status, process_status))
+        self._set_badge(self.process_badge, self._process_tone(process_status))
         message = (
             empty_state_message(self.mode_var.get(), error_code=exc.code, process_status=process_status)
             if isinstance(exc, WorkflowError)
@@ -779,7 +788,7 @@ class CacheExtractorApp(tk.Tk):
     def _process_tone(self, process_status: str) -> str:
         if process_status == "running":
             return "ok"
-        if process_status in {"starting", "tray_only"}:
+        if process_status in {"starting", "background", "tray_only"}:
             return "busy"
         if process_status == "not_installed":
             return "error"
