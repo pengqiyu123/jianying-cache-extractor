@@ -15,7 +15,7 @@ from ..models import (
 )
 
 APP_TITLE = "剪映缓存提取工具"
-APP_VERSION = "v0.1"
+APP_VERSION = "v0.2"
 
 BADGE_COLORS = {
     "ok": ("#0f7b33", "#d1fae5"),
