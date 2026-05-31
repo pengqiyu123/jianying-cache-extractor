@@ -141,10 +141,14 @@ class PythonApi:
         return {"accepted": True}
 
     def open_draft_dir(self) -> dict[str, Any]:
-        if self.created_draft_path is None or not self.created_draft_path.exists():
-            return {"accepted": False, "error": "draft_dir_missing"}
-        subprocess.Popen(["explorer", str(self.created_draft_path)])
-        return {"accepted": True}
+        project = self.state.selected_project_path
+        if project is not None and project.exists():
+            subprocess.Popen(["explorer", str(project)])
+            return {"accepted": True}
+        if self.created_draft_path is not None and self.created_draft_path.exists():
+            subprocess.Popen(["explorer", str(self.created_draft_path)])
+            return {"accepted": True}
+        return {"accepted": False, "error": "draft_dir_missing"}
 
     def _detect_environment(self) -> None:
         info = self.env.detect()

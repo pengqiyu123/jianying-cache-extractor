@@ -26,8 +26,6 @@ const els = {
   restartBtn: $('restartBtn'),
   importBtn: $('importBtn'),
   uncomposeBtn: $('uncomposeBtn'),
-  draftNameInput: $('draftNameInput'),
-  createDraftBtn: $('createDraftBtn'),
   draftResult: $('draftResult'),
   openDraftBtn: $('openDraftBtn'),
   clearLogBtn: $('clearLogBtn'),
@@ -60,6 +58,10 @@ window.__onPyEvent = function onPyEvent(event, payload) {
       if (typeof payload.confirmed === 'boolean') {
         els.confirmOpen.checked = payload.confirmed;
       }
+      if (payload.projectPath) {
+        els.openDraftBtn.disabled = false;
+        els.draftResult.textContent = payload.projectPath;
+      }
       break;
     case 'scan_result':
       renderCacheTable(payload.files || []);
@@ -89,7 +91,6 @@ window.__onPyEvent = function onPyEvent(event, payload) {
       break;
     case 'draft_created':
       els.draftResult.textContent = `${payload.name || '-'}  ${payload.path || ''}`;
-      els.openDraftBtn.disabled = false;
       addLog('草稿已创建，请回到剪映首页查看。');
       break;
     case 'error':
@@ -123,7 +124,6 @@ function wireEvents() {
   els.restartBtn.addEventListener('click', () => pywebview.api.restart_jianying());
   els.importBtn.addEventListener('click', () => pywebview.api.auto_import());
   els.uncomposeBtn.addEventListener('click', () => pywebview.api.uncompose_clip());
-  els.createDraftBtn.addEventListener('click', () => pywebview.api.create_draft(els.draftNameInput.value));
   els.openDraftBtn.addEventListener('click', () => pywebview.api.open_draft_dir());
   els.clearLogBtn.addEventListener('click', () => {
     els.logList.innerHTML = '';
@@ -210,15 +210,11 @@ function renderTracked(payload) {
     return;
   }
   els.trackedText.textContent = `${payload.name} (${payload.sizeText || '-'})`;
-  if (!els.draftNameInput.value) {
-    els.draftNameInput.value = payload.name.replace(/_video\.mp4$/i, '').replace(/\.mp4$/i, '');
-  }
 }
 
 function updateButtonStates(states) {
   const mapping = {
     scan: els.scanBtn,
-    create_draft: els.createDraftBtn,
     compound: els.compoundBtn,
     restart: els.restartBtn,
     auto_import: els.importBtn,

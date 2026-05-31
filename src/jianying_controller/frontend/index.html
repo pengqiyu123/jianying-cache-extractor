@@ -52,7 +52,8 @@
       <details class="panel details">
         <summary>使用说明</summary>
         <p>先在剪映中打开目标项目，再按顺序复合、重启、导入。</p>
-        <p>复合片段快捷键默认使用 Shift+G。</p>
+        <p>剪映没有默认的复合片段快捷键，需要手动设置。<br>本工具默认使用 <strong>Shift+G</strong>（推荐）。</p>
+        <p>设置方法：剪映菜单 → 设置 → 快捷键 → 搜索"复合片段"。</p>
       </details>
     </aside>
 
@@ -104,11 +105,8 @@
         </div>
 
         <div class="panel draft-panel">
-          <div class="panel-title">草稿</div>
-          <label class="field-label" for="draftNameInput">草稿名</label>
-          <input id="draftNameInput" type="text" placeholder="默认使用缓存文件名">
-          <button id="createDraftBtn" class="success full" disabled>创建剪映草稿</button>
-          <div id="draftResult" class="result-line">-</div>
+          <div class="panel-title">草稿目录</div>
+          <div id="draftResult" class="result-line">选择项目后可打开对应草稿目录</div>
           <button id="openDraftBtn" class="secondary full" disabled>打开草稿目录</button>
         </div>
       </section>
