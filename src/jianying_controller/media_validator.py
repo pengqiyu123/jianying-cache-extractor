@@ -30,7 +30,16 @@ class MediaValidationResult:
     modified_at: datetime | None = None
 
 
-def validate_video(path: str | Path) -> VideoInfo | None:
+@dataclass(frozen=True)
+class CopyVerification:
+    source_path: Path
+    target_path: Path
+    source_size: int
+    target_size: int
+    size_verified: bool
+
+
+def inspect_video(path: str | Path) -> VideoInfo | tuple[int | None, int | None, float | None] | None:
     """Return video metadata when MediaInfo can parse a visual track."""
     try:
         info = MediaInfo.parse(str(path), mediainfo_options={"File_TestContinuousFileNames": "0"})
@@ -48,6 +57,10 @@ def validate_video(path: str | Path) -> VideoInfo | None:
     )
 
 
+def validate_video(path: str | Path) -> VideoInfo | tuple[int | None, int | None, float | None] | None:
+    return inspect_video(path)
+
+
 def is_file_stable(path: str | Path, *, interval: float = 1.0) -> bool:
     media_path = Path(path)
     try:
@@ -61,6 +74,45 @@ def is_file_stable(path: str | Path, *, interval: float = 1.0) -> bool:
     except OSError:
         return False
     return first == second
+
+
+def wait_until_stable(path: str | Path, *, samples: int = 3, interval_seconds: float = 0.5) -> bool:
+    media_path = Path(path)
+    if samples < 2:
+        samples = 2
+    last: tuple[int, float] | None = None
+    for index in range(samples):
+        try:
+            stat = media_path.stat()
+        except OSError:
+            return False
+        current = (stat.st_size, stat.st_mtime)
+        if last is not None and current != last:
+            return False
+        last = current
+        if index < samples - 1 and interval_seconds > 0:
+            time.sleep(interval_seconds)
+    return True
+
+
+def verify_copy(source: str | Path, target: str | Path) -> CopyVerification:
+    source_path = Path(source)
+    target_path = Path(target)
+    try:
+        source_size = source_path.stat().st_size
+    except OSError:
+        source_size = -1
+    try:
+        target_size = target_path.stat().st_size
+    except OSError:
+        target_size = -1
+    return CopyVerification(
+        source_path=source_path,
+        target_path=target_path,
+        source_size=source_size,
+        target_size=target_size,
+        size_verified=source_size >= 0 and source_size == target_size,
+    )
 
 
 def validate_media_file(path: str | Path, *, require_stable: bool = False) -> MediaValidationResult:
@@ -88,7 +140,7 @@ def validate_media_file(path: str | Path, *, require_stable: bool = False) -> Me
             modified_at=modified_at,
         )
 
-    if require_stable and not is_file_stable(media_path):
+    if require_stable and not wait_until_stable(media_path):
         return MediaValidationResult(
             status=CandidateStatus.WRITING,
             reason="still_writing",
@@ -96,7 +148,7 @@ def validate_media_file(path: str | Path, *, require_stable: bool = False) -> Me
             modified_at=modified_at,
         )
 
-    info = validate_video(media_path)
+    info = inspect_video(media_path)
     if info is None:
         return MediaValidationResult(
             status=CandidateStatus.REJECTED,
@@ -105,11 +157,33 @@ def validate_media_file(path: str | Path, *, require_stable: bool = False) -> Me
             modified_at=modified_at,
         )
 
+    width, height, duration_ms = _shape(info)
+    if not width or not height:
+        return MediaValidationResult(
+            status=CandidateStatus.REJECTED,
+            reason="invalid_dimensions",
+            size_bytes=stat.st_size,
+            modified_at=modified_at,
+        )
+    if not duration_ms or duration_ms <= 0:
+        return MediaValidationResult(
+            status=CandidateStatus.REJECTED,
+            reason="invalid_duration",
+            size_bytes=stat.st_size,
+            modified_at=modified_at,
+        )
+
     return MediaValidationResult(
         status=CandidateStatus.AVAILABLE,
-        width=info.width,
-        height=info.height,
-        duration_ms=info.duration_ms,
+        width=width,
+        height=height,
+        duration_ms=duration_ms,
         size_bytes=stat.st_size,
         modified_at=modified_at,
     )
+
+
+def _shape(info) -> tuple[int | None, int | None, float | None]:
+    if isinstance(info, tuple):
+        return info[0], info[1], info[2]
+    return getattr(info, "width", None), getattr(info, "height", None), getattr(info, "duration_ms", None)

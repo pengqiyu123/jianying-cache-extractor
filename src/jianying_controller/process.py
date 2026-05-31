@@ -34,7 +34,7 @@ class JianYingProcess:
             return ProcessStatus.NOT_INSTALLED
 
         if main_pids:
-            return ProcessStatus.RUNNING if self.find_main_window() is not None else ProcessStatus.BACKGROUND
+            return ProcessStatus.RUNNING if self._has_visible_window(main_pids) else ProcessStatus.BACKGROUND
         if tray_pids:
             return ProcessStatus.TRAY_ONLY
         return ProcessStatus.STOPPED
@@ -113,6 +113,22 @@ class JianYingProcess:
 
         user32.EnumWindows(enum_callback, 0)
         return matches[0] if matches else None
+
+    def _has_visible_window(self, process_ids: list[int]) -> bool:
+        if not process_ids:
+            return False
+        hwnd = self.find_main_window()
+        if hwnd is None:
+            return False
+        if os.name != "nt":
+            return False
+        try:
+            user32 = ctypes.windll.user32
+        except AttributeError:
+            return False
+        pid = wt.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value) in set(process_ids)
 
     def focus_main_window(self) -> bool:
         hwnd = self.find_main_window()

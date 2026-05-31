@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from jianying_controller.__main__ import build_parser
-from jianying_controller.gui import GuiState, button_states, format_status_message
+from jianying_controller.gui.state import GuiState, button_states, format_status_message
 from jianying_controller.models import ProcessStatus, WorkflowPhase
 
 

@@ -51,12 +51,15 @@ class WorkflowPhase(str, Enum):
 @dataclass(frozen=True)
 class MediaCandidate:
     path: Path
-    status: CandidateStatus
-    origin: CacheOrigin
-    size_bytes: int
+    origin: CacheOrigin = CacheOrigin.PROJECT
+    source_project_name: str | None = None
+    size_bytes: int = 0
+    modified_at: datetime = field(default_factory=lambda: datetime.fromtimestamp(0))
     width: int | None = None
     height: int | None = None
     duration_ms: float | None = None
+    status: CandidateStatus = CandidateStatus.REJECTED
+    score: int = 0
     rejection_reason: str | None = None
     private_status: PrivateCacheStatus | None = None
 
@@ -100,12 +103,23 @@ class ImportResult:
 @dataclass(frozen=True)
 class CreatedDraft:
     draft_path: Path
-    draft_name: str
+    name: str | None = None
+    media_path: Path | None = None
+    source_media_path: Path | None = None
+    size_verified: bool = False
+    sha256: str | None = None
+    draft_name: str | None = None
+
+    def __post_init__(self) -> None:
+        resolved = self.name or self.draft_name or self.draft_path.name
+        object.__setattr__(self, "name", resolved)
+        object.__setattr__(self, "draft_name", resolved)
 
 
 @dataclass(frozen=True)
 class CreateDraftResult:
     status: str
+    mode: SourceMode | None = None
     selected_media: MediaCandidate | None = None
     created_draft: CreatedDraft | None = None
     warnings: list[str] = field(default_factory=list)
@@ -117,7 +131,17 @@ class ResolvedSource:
     source_name: str
     candidates: list[MediaCandidate]
     mode: SourceMode
+    project_path: Path | None = None
     available_candidates: list[MediaCandidate] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.available_candidates:
+            object.__setattr__(
+                self,
+                "available_candidates",
+                [candidate for candidate in self.candidates if candidate.status == CandidateStatus.AVAILABLE],
+            )
 
 
 @dataclass(frozen=True)
@@ -128,6 +152,8 @@ class CreateDraftRequest:
     source_name: str | None = None
     selected_media_path: Path | None = None
     draft_name: str | None = None
+    fps: int = 30
+    require_confirmed_candidate: bool = True
 
 
 class WorkflowError(Exception):

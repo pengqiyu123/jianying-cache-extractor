@@ -40,7 +40,13 @@ def create_private_cache_draft(
     if alpha.is_file():
         shutil.copy2(alpha, media_dir / alpha.name)
     _write_private_files(draft_path, draft_name, copied, width=width, height=height, duration_us=duration_us)
-    return CreatedDraft(draft_path=draft_path, draft_name=draft_name)
+    return CreatedDraft(
+        name=draft_name,
+        draft_path=draft_path,
+        media_path=copied,
+        source_media_path=source,
+        size_verified=copied.exists() and copied.stat().st_size == source.stat().st_size,
+    )
 
 
 def _resolve_shape(

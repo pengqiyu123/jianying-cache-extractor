@@ -6,7 +6,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from .media_validator import validate_video
+from .media_validator import inspect_video
 from .models import CacheFile
 
 
@@ -36,7 +36,7 @@ def find_combination_mp4s(
             continue
         if min_mtime is not None and stat.st_mtime < min_mtime:
             continue
-        video = validate_video(path)
+        video = inspect_video(path)
         if require_video and video is None:
             continue
         files.append(

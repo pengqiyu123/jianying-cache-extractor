@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>剪映缓存提取工具 v0.1</title>
+  <link rel="stylesheet" href="./style.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <header class="brand">
+        <div>
+          <h1>剪映缓存提取</h1>
+          <span>v0.1</span>
+        </div>
+        <span id="connectionBadge" class="badge muted">等待连接</span>
+      </header>
+
+      <section class="panel">
+        <div class="panel-title">环境</div>
+        <dl class="info-list">
+          <div>
+            <dt>剪映状态</dt>
+            <dd><span id="processBadge" class="badge muted">未检测</span></dd>
+          </div>
+          <div>
+            <dt>版本</dt>
+            <dd id="versionText">-</dd>
+          </div>
+          <div>
+            <dt>草稿目录</dt>
+            <dd id="draftDirText" class="path-text">-</dd>
+          </div>
+        </dl>
+        <button id="detectBtn" class="secondary full">重新检测</button>
+      </section>
+
+      <section class="panel">
+        <div class="panel-title">来源</div>
+        <label class="field-label" for="projectSelect">项目</label>
+        <select id="projectSelect">
+          <option value="">请选择项目</option>
+        </select>
+        <label class="check-row">
+          <input id="confirmOpen" type="checkbox">
+          <span>已打开该项目编辑界面</span>
+        </label>
+        <button id="scanBtn" class="secondary full" disabled>扫描缓存</button>
+      </section>
+
+      <details class="panel details">
+        <summary>使用说明</summary>
+        <p>先在剪映中打开目标项目，再按顺序复合、重启、导入。</p>
+        <p>复合片段快捷键默认使用 Shift+G。</p>
+      </details>
+    </aside>
+
+    <main class="main">
+      <section class="toolbar">
+        <div>
+          <div class="eyebrow">工作流</div>
+          <h2 id="phaseTitle">准备中</h2>
+        </div>
+        <div id="trackedText" class="tracked">未选择缓存视频</div>
+      </section>
+
+      <section class="content-grid">
+        <div class="panel cache-panel">
+          <div class="panel-header">
+            <div>
+              <div class="panel-title">缓存视频</div>
+              <p id="cacheHint">请选择项目后扫描。</p>
+            </div>
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>文件</th>
+                  <th>大小</th>
+                  <th>分辨率</th>
+                  <th>时长</th>
+                  <th>状态</th>
+                </tr>
+              </thead>
+              <tbody id="cacheTable">
+                <tr><td colspan="5" class="empty">暂无缓存视频</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="panel actions-panel">
+          <div class="panel-title">操作</div>
+          <label class="field-label" for="hotkeyInput">复合快捷键</label>
+          <input id="hotkeyInput" type="text" readonly value="Shift + G">
+          <div class="button-stack">
+            <button id="compoundBtn" class="primary" disabled>① 一键复合片段</button>
+            <button id="restartBtn" class="warning" disabled>② 重启剪映</button>
+            <button id="importBtn" class="success" disabled>③ 一键导入</button>
+            <button id="uncomposeBtn" class="secondary" disabled>解除复合片段</button>
+          </div>
+        </div>
+
+        <div class="panel draft-panel">
+          <div class="panel-title">草稿</div>
+          <label class="field-label" for="draftNameInput">草稿名</label>
+          <input id="draftNameInput" type="text" placeholder="默认使用缓存文件名">
+          <button id="createDraftBtn" class="success full" disabled>创建剪映草稿</button>
+          <div id="draftResult" class="result-line">-</div>
+          <button id="openDraftBtn" class="secondary full" disabled>打开草稿目录</button>
+        </div>
+      </section>
+
+      <section class="panel log-panel">
+        <div class="panel-header">
+          <div class="panel-title">日志</div>
+          <button id="clearLogBtn" class="ghost">清空</button>
+        </div>
+        <div id="logList" class="log-list"></div>
+      </section>
+    </main>
+  </div>
+  <script src="./app.js"></script>
+</body>
+</html>

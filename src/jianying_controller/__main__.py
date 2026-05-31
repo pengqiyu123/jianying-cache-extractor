@@ -24,13 +24,18 @@ def build_parser() -> argparse.ArgumentParser:
     scan_group.add_argument("--auto", action="store_true")
     scan_group.add_argument("--project")
     scan_group.add_argument("--mp4")
+    scan.add_argument("--source-name")
+    scan.add_argument("--json", action="store_true")
 
     create = subparsers.add_parser("create")
     create_group = create.add_mutually_exclusive_group(required=True)
     create_group.add_argument("--auto", action="store_true")
     create_group.add_argument("--project")
     create_group.add_argument("--mp4")
+    create.add_argument("--media")
+    create.add_argument("--source-name")
     create.add_argument("--draft-name")
+    create.add_argument("--json", action="store_true")
 
     auto_import = subparsers.add_parser("auto-import")
     auto_import.add_argument("mp4")
@@ -54,40 +59,54 @@ def main(argv: list[str] | None = None) -> int:
     try:
         payload = _dispatch(args)
     except WorkflowError as exc:
-        _print_json({"status": "error", "code": exc.code, "message": exc.message})
+        _print_json({"status": "failed", "code": exc.code, "message": exc.message})
         return 1
     except Exception as exc:
-        _print_json({"status": "error", "code": "unexpected_error", "message": str(exc)})
+        _print_json({"status": "failed", "code": "unexpected_error", "message": str(exc)})
         return 1
-    _print_json({"status": "ok", "data": payload})
+    _print_json(payload)
     return 0
 
 
 def _dispatch(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "scan":
         mode, kwargs = _source_args(args)
-        source = scan_source(mode, **kwargs)
+        source = scan_source(mode, source_name=getattr(args, "source_name", None), **kwargs)
         return {
+            "status": "detected",
             "sourceName": source.source_name,
             "mode": source.mode.value,
             "candidates": [str(candidate.path) for candidate in source.candidates],
         }
     if args.command == "create":
         mode, kwargs = _source_args(args)
-        result = create_draft_from_source(CreateDraftRequest(mode=mode, draft_name=args.draft_name, **kwargs))
-        return {"result": result.status, "draft": str(result.created_draft.draft_path) if result.created_draft else None}
+        selected_media_path = Path(args.media) if getattr(args, "media", None) else None
+        result = create_draft_from_source(
+            CreateDraftRequest(
+                mode=mode,
+                draft_name=args.draft_name,
+                selected_media_path=selected_media_path,
+                source_name=getattr(args, "source_name", None),
+                **kwargs,
+            )
+        )
+        return {
+            "status": result.status,
+            "mode": result.mode.value if result.mode else None,
+            "draft": str(result.created_draft.draft_path) if result.created_draft else None,
+        }
     if args.command == "auto-import":
         result = auto_import_file(args.mp4)
-        return {"result": result.status, "error": result.error_detail}
+        return {"status": result.status, "error": result.error_detail}
     if args.command == "compound-clip":
         result = run_compound_clip_sequence(args.hotkey)
-        return {"result": result.status, "warnings": result.warnings}
+        return {"status": result.status, "warnings": result.warnings}
     if args.command == "prepare-import":
         result = restart_jianying_for_import()
-        return {"result": result.status, "warnings": result.warnings}
+        return {"status": result.status, "warnings": result.warnings}
     if args.command == "uncompose-clip":
         result = run_uncompose_clip_sequence()
-        return {"result": result.status, "warnings": result.warnings}
+        return {"status": result.status, "warnings": result.warnings}
     raise WorkflowError("unknown_command", f"未知命令: {args.command}")
 
 
