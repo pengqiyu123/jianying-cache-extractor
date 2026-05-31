@@ -1,7 +1,10 @@
 @echo off
 setlocal
+cd /d "%~dp0"
 
-set "ROOT=%~dp0"
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%scripts\start.ps1"
+if not exist ".venv\Scripts\python.exe" (
+  py -3 -m venv .venv
+)
 
-endlocal
+".venv\Scripts\python.exe" -m pip install -e .
+".venv\Scripts\python.exe" -m jianying_controller

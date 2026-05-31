@@ -1,12 +1,11 @@
-"""Shared data models for JianYing cache extraction workflows."""
+"""Shared data models for the JianYing cache extraction workflow."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
-from typing import Any
 
 
 class SourceMode(str, Enum):
@@ -15,65 +14,110 @@ class SourceMode(str, Enum):
     MP4 = "mp4"
 
 
-class CacheOrigin(str, Enum):
-    PROJECT = "project"
-    CLOUD_CACHE = "cloud_cache"
-    MANUAL_FILE = "manual_file"
-
-
 class CandidateStatus(str, Enum):
     AVAILABLE = "available"
     WRITING = "writing"
     REJECTED = "rejected"
 
 
-@dataclass(frozen=True)
-class MediaValidationResult:
-    status: CandidateStatus
-    reason: str | None = None
-    width: int | None = None
-    height: int | None = None
-    duration_ms: float | None = None
-    size_bytes: int = 0
-    modified_at: datetime | None = None
+class CacheOrigin(str, Enum):
+    PROJECT = "project"
+    CLOUD_CACHE = "cloud_cache"
+    MANUAL_FILE = "manual_file"
 
 
-@dataclass(frozen=True)
-class CopyVerification:
-    source_path: Path
-    target_path: Path
-    source_size_bytes: int
-    target_size_bytes: int
-    size_verified: bool
-    sha256: str | None = None
+class ProcessStatus(str, Enum):
+    NOT_INSTALLED = "not_installed"
+    STOPPED = "stopped"
+    STARTING = "starting"
+    RUNNING = "running"
+    BACKGROUND = "background"
+    TRAY_ONLY = "tray_only"
+
+
+class PrivateCacheStatus(str, Enum):
+    STANDARD_IMPORTABLE = "standard_importable"
+    PRIVATE_IMPORTABLE = "private_importable"
+    PRIVATE_NOT_IMPORTABLE = "private_not_importable"
+
+
+class WorkflowPhase(str, Enum):
+    IDLE = "idle"
+    COMPOSITE_DONE = "composite_done"
+    RESTARTED = "restarted"
+    IMPORTED = "imported"
 
 
 @dataclass(frozen=True)
 class MediaCandidate:
     path: Path
+    status: CandidateStatus
     origin: CacheOrigin
-    source_project_name: str | None
+    size_bytes: int
+    width: int | None = None
+    height: int | None = None
+    duration_ms: float | None = None
+    rejection_reason: str | None = None
+    private_status: PrivateCacheStatus | None = None
+
+
+@dataclass(frozen=True)
+class JianYingInfo:
+    install_dir: Path
+    exe_path: Path
+    launcher_path: Path
+    draft_dir: Path
+    version: str | None = None
+
+
+@dataclass(frozen=True)
+class DraftFolder:
+    path: Path
+    name: str
+    modified_at: datetime
+    has_combination_cache: bool = False
+
+
+@dataclass(frozen=True)
+class CacheFile:
+    path: Path
     size_bytes: int
     modified_at: datetime
-    width: int | None
-    height: int | None
-    duration_ms: float | None
-    status: CandidateStatus
-    score: int = 0
-    rejection_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class CompoundResult:
+    status: str
+    warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class ImportResult:
+    status: str
+    error_detail: str | None = None
+
+
+@dataclass(frozen=True)
+class CreatedDraft:
+    draft_path: Path
+    draft_name: str
+
+
+@dataclass(frozen=True)
+class CreateDraftResult:
+    status: str
+    selected_media: MediaCandidate | None = None
+    created_draft: CreatedDraft | None = None
+    warnings: list[str] = field(default_factory=list)
+    tracked_mp4: Path | None = None
 
 
 @dataclass(frozen=True)
 class ResolvedSource:
-    mode: SourceMode
     source_name: str
     candidates: list[MediaCandidate]
-    project_path: Path | None = None
-    warnings: list[str] | None = None
-
-    @property
-    def available_candidates(self) -> list[MediaCandidate]:
-        return [candidate for candidate in self.candidates if candidate.status == CandidateStatus.AVAILABLE]
+    mode: SourceMode
+    available_candidates: list[MediaCandidate] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -83,42 +127,11 @@ class CreateDraftRequest:
     mp4_path: Path | None = None
     source_name: str | None = None
     selected_media_path: Path | None = None
-    fps: int = 30
-    require_confirmed_candidate: bool = True
-
-
-@dataclass(frozen=True)
-class CreatedDraft:
-    name: str
-    draft_path: Path
-    media_path: Path
-    source_media_path: Path
-    size_verified: bool = True
-    sha256: str | None = None
-
-
-@dataclass(frozen=True)
-class CreateDraftResult:
-    status: str
-    mode: SourceMode
-    selected_media: MediaCandidate | None
-    created_draft: CreatedDraft | None
-    warnings: list[str]
+    draft_name: str | None = None
 
 
 class WorkflowError(Exception):
-    """Structured error for CLI/GUI workflow boundaries."""
-
-    def __init__(self, code: str, message: str, details: list[Any] | None = None):
-        super().__init__(message)
+    def __init__(self, code: str, message: str):
         self.code = code
         self.message = message
-        self.details = details or []
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "status": "failed",
-            "code": self.code,
-            "message": self.message,
-            "details": self.details,
-        }
+        super().__init__(message)

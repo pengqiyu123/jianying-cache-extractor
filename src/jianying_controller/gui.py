@@ -1,58 +1,39 @@
-"""Tkinter GUI for extracting JianYing combination caches."""
+"""Tkinter GUI for the JianYing cache extraction workflow."""
 
 from __future__ import annotations
 
-import os
 import queue
 import threading
 import tkinter as tk
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
-from typing import Iterable
+from typing import Callable
 
+from .auto_import import auto_import_file
+from .cache_extractor import find_combination_mp4s, scan_latest_cache
+from .compound_clip import DEFAULT_PRECOMPOSE_HOTKEY, run_compound_clip_sequence, run_uncompose_clip_sequence
+from .draft_creator import create_extracted_draft
+from .draft_detector import detect_recent_drafts
 from .env import JianYingEnv
-from .models import (
-    CacheOrigin,
-    CandidateStatus,
-    CreateDraftRequest,
-    CreatedDraft,
-    MediaCandidate,
-    ResolvedSource,
-    SourceMode,
-    WorkflowError,
-)
+from .models import DraftFolder, MediaCandidate, ProcessStatus, WorkflowPhase
+from .private_cache_draft import create_private_cache_draft
+from .private_cache_scan import inspect_private_cache
 from .process import JianYingProcess
-from .workflow import create_draft_from_source, scan_source
 
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 
-APP_TITLE = "剪映缓存提取 v0.1"
+APP_TITLE = "剪映缓存提取工具"
+APP_VERSION = "v0.1"
 
-STATUS_COLORS = {
-    "ok": ("#0f7b33", "#e8f5ec"),
-    "busy": ("#a16207", "#fff7db"),
+BADGE_COLORS = {
+    "ok": ("#0f7b33", "#d1fae5"),
+    "busy": ("#a16207", "#fef3c7"),
     "muted": ("#6b7280", "#f3f4f6"),
     "error": ("#b91c1c", "#fee2e2"),
     "info": ("#1d4ed8", "#dbeafe"),
-}
-
-ORIGIN_LABELS = {
-    CacheOrigin.PROJECT: "项目目录",
-    CacheOrigin.CLOUD_CACHE: "cloud_cache 镜像",
-    CacheOrigin.MANUAL_FILE: "手动文件",
-}
-
-REJECTION_LABELS = {
-    "alpha_sidecar": "已跳过 alpha",
-    "empty_file": "空文件",
-    "invalid_dimensions": "尺寸无效",
-    "invalid_duration": "时长无效",
-    "media_not_found": "文件不存在",
-    "no_video_track": "无视频轨",
-    "not_file": "不是文件",
-    "not_mp4": "不是 MP4",
-    "read_failed": "读取失败",
-    "still_writing": "正在生成",
 }
 
 PROCESS_LABELS = {
@@ -64,27 +45,57 @@ PROCESS_LABELS = {
     "tray_only": "仅托盘",
 }
 
-EMPTY_STATE_BY_MODE = {
-    SourceMode.AUTO: "没有找到最近活跃的剪映项目，请手动选择项目。",
-    SourceMode.PROJECT: "最近半小时内没有可用的复合片段缓存。请在剪映中完成预合成后重试。",
-    SourceMode.MP4: "请选择一个可导入的 MP4 文件。",
+REJECTION_LABELS = {
+    "alpha_sidecar": "已跳过 alpha",
+    "empty_file": "空文件",
+    "invalid_dimensions": "尺寸无效",
+    "invalid_duration": "时长无效",
+    "media_not_found": "文件不存在",
+    "missing_alpha_sidecar": "缺少 alpha 侧车文件",
+    "alpha_unreadable": "alpha 文件不可读",
+    "no_video_track": "无视频轨",
+    "not_file": "不是文件",
+    "not_mp4": "不是 MP4",
+    "not_main_mp4": "非主 MP4",
+    "still_writing": "正在生成",
 }
 
-EMPTY_STATE_BY_ERROR = {
-    "no_active_project": EMPTY_STATE_BY_MODE[SourceMode.AUTO],
-    "project_required": "请选择剪映项目目录。",
-    "project_not_found": "项目目录不存在，请重新选择。",
-    "mp4_required": EMPTY_STATE_BY_MODE[SourceMode.MP4],
-    "media_not_found": "媒体文件不存在，请重新选择。",
-    "no_valid_media": "未找到可导入的视频缓存。",
+PHASE_LABELS = {
+    WorkflowPhase.IDLE: "准备中",
+    WorkflowPhase.COMPOSITE_DONE: "复合片段已发送",
+    WorkflowPhase.RESTARTED: "已重启",
+    WorkflowPhase.IMPORTED: "导入已发送",
 }
 
-MODE_HELP_TEXT = {
-    SourceMode.AUTO: "请先在剪映中完成复合片段预合成。工具会查找最近活跃项目和 cloud_cache 缓存。",
-    SourceMode.PROJECT: "选择一个剪映项目目录，工具会同时扫描同名 cloud_cache 镜像。",
-    SourceMode.MP4: "选择一个本地 MP4，工具会把它创建为新的剪映草稿。",
+STATUS_MESSAGES = {
+    "compound_sent": "已发送复合请求，等待缓存生成...",
+    "restart_ready": "已重启，请打开目标项目",
+    "import_sent": "已发送导入请求，请在剪映中确认",
 }
 
+# Usage instructions shown to the user
+USAGE_INSTRUCTIONS = """\
+本工具通过剪映的「复合片段预合成」机制提取视频缓存，绕过 VIP 导出限制。
+
+⚠️ 使用前必须设置快捷键：
+  剪映菜单 → 设置 → 快捷键 → 恢复默认 → 找到「预合成复合片段（子草稿）」→ 设为自定义快捷键（默认 Shift+G）
+
+📋 使用流程：
+  ① 在剪映中打开项目，将素材拖入时间线
+  ② 勾选「我已打开该项目编辑界面」
+  ③ 点击「一键复合片段」→ 等待渲染完成（缓存视频列表自动刷新）
+  ④ 点击「重启剪映」→ 等待剪映重新启动
+  ⑤ 重新打开同一项目，勾选「我已打开该项目编辑界面」
+  ⑥ 点击「一键导入」→ 缓存视频将导入到时间线
+
+💡 提示：
+  - 每步操作只发送请求，不保证成功，请观察剪映的实际反馈
+  - 草稿名自动从缓存文件名生成，可直接点击「创建剪映草稿」保存为独立草稿"""
+
+
+# ---------------------------------------------------------------------------
+# Helper functions
+# ---------------------------------------------------------------------------
 
 def human_size(size_bytes: int) -> str:
     value = float(size_bytes)
@@ -101,716 +112,795 @@ def human_duration(duration_ms: float | None) -> str:
     return f"{duration_ms / 1000:.1f}s"
 
 
-def resolution_label(candidate: MediaCandidate) -> str:
-    if candidate.width and candidate.height:
-        return f"{candidate.width}x{candidate.height}"
+def resolution_label(w: int | None, h: int | None) -> str:
+    if w and h:
+        return f"{w}x{h}"
     return "-"
 
 
-def candidate_status_label(candidate: MediaCandidate) -> str:
-    if candidate.status == CandidateStatus.AVAILABLE:
-        return "可用"
-    if candidate.status == CandidateStatus.WRITING:
-        return "正在生成"
-    if candidate.rejection_reason:
-        return REJECTION_LABELS.get(candidate.rejection_reason, candidate.rejection_reason)
-    return "不可用"
+def _classification_display(status: str, reason: str | None, phase: WorkflowPhase = WorkflowPhase.IDLE) -> str:
+    if status not in ("standard_importable", "private_importable"):
+        if reason and reason in REJECTION_LABELS:
+            return REJECTION_LABELS[reason]
+        if reason:
+            return reason
+        return "不可导入"
+    if phase in (WorkflowPhase.RESTARTED, WorkflowPhase.IMPORTED):
+        return "✓ 可导入"
+    if phase == WorkflowPhase.COMPOSITE_DONE:
+        return "等待重启剪映"
+    return "✓ 格式正确"
 
 
-def candidate_tag(candidate: MediaCandidate) -> str:
-    if candidate.status == CandidateStatus.AVAILABLE:
+def _classification_tag(status: str, phase: WorkflowPhase = WorkflowPhase.IDLE) -> str:
+    if status not in ("standard_importable", "private_importable"):
+        return "rejected"
+    if phase in (WorkflowPhase.RESTARTED, WorkflowPhase.IMPORTED):
         return "available"
-    if candidate.status == CandidateStatus.WRITING:
+    if phase == WorkflowPhase.COMPOSITE_DONE:
         return "writing"
-    return "rejected"
+    return "available"
 
 
-def sort_candidates_for_display(candidates: Iterable[MediaCandidate]) -> list[MediaCandidate]:
-    """Return candidates in the order a user should review them."""
-    status_rank = {
-        CandidateStatus.AVAILABLE: 0,
-        CandidateStatus.WRITING: 1,
-        CandidateStatus.REJECTED: 2,
-    }
-    return sorted(
-        candidates,
-        key=lambda candidate: (
-            status_rank.get(candidate.status, 99),
-            -candidate.score,
-            -candidate.size_bytes,
-            -candidate.modified_at.timestamp(),
-            str(candidate.path).lower(),
-        ),
-    )
+def _badge_style(tone: str) -> dict:
+    fg, bg = BADGE_COLORS.get(tone, BADGE_COLORS["muted"])
+    return {"fg": fg, "bg": bg}
 
 
-def candidate_row(candidate: MediaCandidate) -> tuple[str, str, str, str, str, str, str, str]:
-    """Return Treeview-ready values for a media candidate."""
-    return (
-        candidate.path.name,
-        ORIGIN_LABELS.get(candidate.origin, candidate.origin.value),
-        human_size(candidate.size_bytes),
-        human_duration(candidate.duration_ms),
-        resolution_label(candidate),
-        candidate.modified_at.strftime("%Y-%m-%d %H:%M:%S"),
-        candidate_status_label(candidate),
-        str(candidate.path),
-    )
+def _process_tone(status: ProcessStatus) -> str:
+    if status == ProcessStatus.RUNNING:
+        return "ok"
+    if status in {ProcessStatus.STARTING, ProcessStatus.BACKGROUND, ProcessStatus.TRAY_ONLY}:
+        return "busy"
+    if status == ProcessStatus.NOT_INSTALLED:
+        return "error"
+    return "muted"
 
 
-def candidate_summary(candidate: MediaCandidate | None) -> str:
-    if candidate is None:
-        return "未选择缓存视频。"
-    return (
-        f"已选择：{candidate.path.name} · {ORIGIN_LABELS.get(candidate.origin, candidate.origin.value)} · "
-        f"{human_size(candidate.size_bytes)} · {human_duration(candidate.duration_ms)} · "
-        f"{resolution_label(candidate)} · {candidate_status_label(candidate)}"
-    )
+def _phase_tone(phase: WorkflowPhase) -> str:
+    if phase == WorkflowPhase.IDLE:
+        return "muted"
+    return "info"
 
 
-def status_label(status: str) -> str:
-    labels = {
-        "detected": "已找到候选视频，请确认后创建剪映草稿。",
-        "validated": "视频可用。",
-        "copying": "正在复制视频。",
-        "creating": "正在创建草稿...",
-        "copied": "视频已复制到新草稿目录。",
-        "draft_created": "草稿已创建，请回到剪映首页查看。",
-        "user_verified_openable": "用户已确认剪映可见/可打开。",
-        "failed": "操作失败。",
-    }
-    return labels.get(status, status)
+# ---------------------------------------------------------------------------
+# HotkeyCapture widget
+# ---------------------------------------------------------------------------
+
+_MASK_SHIFT = 0x1
+_MASK_CONTROL = 0x4
+_MASK_ALT = 0x20000
+_MODIFIER_KEYSYMS = {"Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R"}
 
 
-def empty_state_message(
-    mode: SourceMode | str,
-    candidates: Iterable[MediaCandidate] | None = None,
+class HotkeyCapture(tk.Frame):
+    def __init__(self, parent: tk.Widget, initial: str = DEFAULT_PRECOMPOSE_HOTKEY, **kwargs):
+        super().__init__(parent, **kwargs)
+        self._internal: str = initial
+        self._display: str = self._format_display(initial)
+        self._capturing = False
+
+        self.entry = tk.Entry(self, width=16, font=("", 10), justify="center")
+        self.entry.pack(fill="x")
+        self.entry.insert(0, self._display)
+        self.entry.config(state="readonly")
+        self.entry.bind("<FocusIn>", self._on_focus_in)
+        self.entry.bind("<FocusOut>", self._on_focus_out)
+        self.entry.bind("<KeyPress>", self._on_key_press)
+        self.entry.bind("<Escape>", self._on_escape)
+        self.entry.bind("<BackSpace>", self._on_backspace)
+
+    def get_internal(self) -> str:
+        return self._internal
+
+    def _on_focus_in(self, _event: tk.Event) -> None:
+        self._capturing = True
+        self.entry.config(state="normal")
+        self.entry.delete(0, "end")
+        self.entry.insert(0, "请按下快捷键...")
+        self.entry.config(fg="#6b7280", font=("", 10, "italic"))
+
+    def _on_focus_out(self, _event: tk.Event) -> None:
+        if self._capturing:
+            self._capturing = False
+            self._show_current()
+
+    def _on_key_press(self, event: tk.Event) -> None:
+        keysym = event.keysym
+        if keysym in _MODIFIER_KEYSYMS:
+            return
+        parts_internal: list[str] = []
+        parts_display: list[str] = []
+        if event.state & _MASK_SHIFT:
+            parts_internal.append("shift")
+            parts_display.append("Shift")
+        if event.state & _MASK_CONTROL:
+            parts_internal.append("ctrl")
+            parts_display.append("Ctrl")
+        if event.state & _MASK_ALT:
+            parts_internal.append("alt")
+            parts_display.append("Alt")
+        key = keysym
+        if len(key) == 1:
+            key = key.lower()
+        elif key.startswith("KP_"):
+            key = key[3:]
+        if not parts_display:
+            return
+        parts_internal.append(key)
+        parts_display.append(key.upper() if len(key) == 1 else key)
+        self._internal = "+".join(parts_internal)
+        self._display = " + ".join(parts_display)
+        self._capturing = False
+        self._show_current()
+        self.entry.master.focus_set()
+        return "break"
+
+    def _on_escape(self, _event: tk.Event) -> None:
+        self._capturing = False
+        self._show_current()
+        self.entry.master.focus_set()
+        return "break"
+
+    def _on_backspace(self, _event: tk.Event) -> None:
+        self._internal = DEFAULT_PRECOMPOSE_HOTKEY
+        self._display = self._format_display(DEFAULT_PRECOMPOSE_HOTKEY)
+        self._capturing = False
+        self._show_current()
+        return "break"
+
+    def _show_current(self) -> None:
+        self.entry.config(state="normal")
+        self.entry.delete(0, "end")
+        self.entry.insert(0, self._display)
+        self.entry.config(state="readonly", fg="#111827", font=("", 10, "bold"))
+
+    @staticmethod
+    def _format_display(internal: str) -> str:
+        parts = internal.split("+")
+        display_parts: list[str] = []
+        for p in parts:
+            if p in ("shift", "ctrl", "alt"):
+                display_parts.append(p.capitalize())
+            elif len(p) == 1:
+                display_parts.append(p.upper())
+            else:
+                display_parts.append(p)
+        return " + ".join(display_parts)
+
+
+# ---------------------------------------------------------------------------
+# State
+# ---------------------------------------------------------------------------
+
+@dataclass
+class GuiState:
+    selected_project_path: Path | None = None
+    opened_project_confirmed: bool = False
+    tracked_mp4_path: Path | None = None
+    process_status: ProcessStatus = ProcessStatus.STOPPED
+    workflow_phase: WorkflowPhase = WorkflowPhase.IDLE
+    busy: bool = False
+
+
+def button_states(
     *,
-    error_code: str | None = None,
-    process_status: str | None = None,
-) -> str:
-    """Return product-facing guidance for empty or unavailable scan results."""
-    try:
-        source_mode = SourceMode(mode)
-    except ValueError:
-        source_mode = SourceMode.AUTO
-
-    if source_mode == SourceMode.AUTO and process_status in {"not_installed", "stopped", "tray_only", "background"}:
-        return "未检测到剪映运行主窗口。仍可手动选择项目或 MP4。"
-    if error_code in EMPTY_STATE_BY_ERROR:
-        return EMPTY_STATE_BY_ERROR[error_code]
-
-    candidate_list = list(candidates or [])
-    if any(candidate.status == CandidateStatus.WRITING for candidate in candidate_list):
-        if source_mode == SourceMode.MP4:
-            return "此 MP4 仍在写入，请稍后重试。"
-        return "缓存文件仍在生成，请稍后重新检测。"
-    if any(candidate.status == CandidateStatus.REJECTED for candidate in candidate_list):
-        if source_mode == SourceMode.MP4:
-            rejected = next(candidate for candidate in candidate_list if candidate.status == CandidateStatus.REJECTED)
-            reason = REJECTION_LABELS.get(rejected.rejection_reason or "", rejected.rejection_reason or "不可导入")
-            return f"此 MP4 不可导入：{reason}。请重新选择一个标准 MP4 文件。"
-        reasons = _rejection_summary(candidate_list)
-        if reasons:
-            return f"最近半小时内找到缓存文件，但都不是可导入视频：{reasons}。请完成预合成后重新检测。"
-        return "最近半小时内找到缓存文件，但都不是可导入视频。请完成预合成后重新检测。"
-    return EMPTY_STATE_BY_MODE[source_mode]
+    process: ProcessStatus,
+    phase: WorkflowPhase,
+    selected_project: bool,
+    confirmed_open: bool,
+    tracked_mp4: bool,
+    busy: bool,
+) -> dict[str, bool]:
+    if busy:
+        return {key: False for key in ("scan", "create_draft", "compound", "restart", "auto_import", "uncompose")}
+    return {
+        "scan": selected_project,
+        "create_draft": phase == WorkflowPhase.IDLE and tracked_mp4,
+        "compound": process == ProcessStatus.RUNNING and selected_project and confirmed_open,
+        "restart": phase == WorkflowPhase.COMPOSITE_DONE,
+        "auto_import": process == ProcessStatus.RUNNING
+        and phase == WorkflowPhase.RESTARTED
+        and tracked_mp4
+        and confirmed_open,
+        "uncompose": process == ProcessStatus.RUNNING,
+    }
 
 
-def _rejection_summary(candidates: Iterable[MediaCandidate]) -> str:
-    labels: list[str] = []
-    for candidate in candidates:
-        if candidate.status != CandidateStatus.REJECTED or not candidate.rejection_reason:
-            continue
-        label = REJECTION_LABELS.get(candidate.rejection_reason, candidate.rejection_reason)
-        if label not in labels:
-            labels.append(label)
-        if len(labels) >= 3:
-            break
-    return "、".join(labels)
+def format_status_message(event: str, detail: str | None) -> str:
+    if event == "cache_found" and detail:
+        return f"已找到缓存视频: {detail}"
+    return STATUS_MESSAGES.get(event, detail or "")
 
 
-def safe_error_message(exc: Exception) -> str:
-    """Keep GUI errors useful without leaking Python tracebacks."""
-    if isinstance(exc, WorkflowError):
-        message = exc.message
-    else:
-        message = str(exc) or "操作失败，请稍后重试。"
-    if "Traceback" in message or "\n" in message:
-        return "操作失败，请查看日志后重试。"
-    return message
+# ---------------------------------------------------------------------------
+# Main application
+# ---------------------------------------------------------------------------
 
+class JianYingApp:
+    def __init__(self) -> None:
+        import ttkbootstrap as tb
 
-def build_request(
-    mode: SourceMode,
-    *,
-    project_path: Path | None = None,
-    mp4_path: Path | None = None,
-    source_name: str | None = None,
-    selected_media_path: Path | None = None,
-) -> CreateDraftRequest:
-    return CreateDraftRequest(
-        mode=mode,
-        project_path=project_path,
-        mp4_path=mp4_path,
-        source_name=source_name or None,
-        selected_media_path=selected_media_path,
-    )
-
-
-class CacheExtractorApp(tk.Tk):
-    def __init__(self):
-        super().__init__()
-        self.title(APP_TITLE)
-        self.geometry("980x680")
-        self.minsize(900, 580)
+        self.tb = tb
+        self.root = tb.Window(themename="darkly")
+        self.root.title(APP_TITLE)
+        self.root.geometry("1100x900")
+        self.root.minsize(1000, 780)
 
         self.env = JianYingEnv()
         self.process = JianYingProcess(self.env)
-        self.source: ResolvedSource | None = None
-        self.created: CreatedDraft | None = None
-        self.candidates: list[MediaCandidate] = []
+        self.state = GuiState()
+        self.drafts: list[DraftFolder] = []
         self._candidate_by_iid: dict[str, MediaCandidate] = {}
+        self.created_draft_path: Path | None = None
+        self.events: queue.Queue[tuple[str, object]] = queue.Queue()
 
-        self.mode_var = tk.StringVar(value=SourceMode.AUTO.value)
+        # Tk variables
         self.status_var = tk.StringVar(value="正在检测环境...")
         self.process_var = tk.StringVar(value="-")
+        self.version_var = tk.StringVar(value="-")
         self.draft_dir_var = tk.StringVar(value="-")
-        self.source_var = tk.StringVar(value="-")
-        self.project_path_var = tk.StringVar(value="")
-        self.mp4_path_var = tk.StringVar(value="")
-        self.source_name_var = tk.StringVar(value="")
-        self.created_var = tk.StringVar(value="")
-        self.empty_var = tk.StringVar(value="")
-        self.last_scan_var = tk.StringVar(value="-")
         self.phase_var = tk.StringVar(value="准备中")
-        self.mode_help_var = tk.StringVar(value=MODE_HELP_TEXT[SourceMode.AUTO])
-        self.selected_var = tk.StringVar(value=candidate_summary(None))
-        self.selected_path_var = tk.StringVar(value="-")
-        self.result_name_var = tk.StringVar(value="-")
-        self.result_path_var = tk.StringVar(value="-")
-        self.result_verify_var = tk.StringVar(value="-")
-        self.log_visible_var = tk.BooleanVar(value=False)
-        self._is_scanning = False
-        self._is_creating = False
-        self._ui_events: queue.Queue = queue.Queue()
+        self.tracked_var = tk.StringVar(value="")
+        self.draft_name_var = tk.StringVar(value="")
+        self.created_name_var = tk.StringVar(value="-")
+        self.created_path_var = tk.StringVar(value="-")
+        self.selected_var = tk.StringVar(value="")
 
-        self._build_ui()
-        self.after(50, self._drain_ui_events)
-        self.after(100, self.refresh_environment)
-        self.after(300, self.scan_current_source)
+        self._build()
+        self._apply_button_states()
+        self.after(50, self._drain_events)
+        self.after(100, self._refresh_environment_and_projects)
+        self.after(300, self._refresh_process_status)
 
-    def _build_ui(self) -> None:
-        root = ttk.Frame(self, padding=12)
-        root.pack(fill=tk.BOTH, expand=True)
+    def after(self, ms: int, func: Callable[..., None]) -> None:
+        self.root.after(ms, func)
 
-        ttk.Label(
-            root,
-            text="把剪映复合片段预合成缓存，创建成一个新的剪映草稿。",
-            font=("", 11, "bold"),
-        ).pack(fill=tk.X, pady=(0, 10))
+    def run(self) -> None:
+        self.root.mainloop()
 
-        environment = ttk.LabelFrame(root, text="环境")
-        environment.pack(fill=tk.X)
-        environment.columnconfigure(1, weight=1)
-        environment.columnconfigure(3, weight=1)
-        ttk.Label(environment, text="剪映状态").grid(row=0, column=0, sticky=tk.W, padx=(10, 8), pady=(8, 2))
-        self.process_badge = tk.Label(environment, textvariable=self.process_var, padx=8, pady=2)
-        self.process_badge.grid(row=0, column=1, sticky=tk.W, pady=(8, 2))
-        ttk.Label(environment, text="最近检测").grid(row=0, column=2, sticky=tk.W, padx=(18, 8), pady=(8, 2))
-        ttk.Label(environment, textvariable=self.last_scan_var).grid(row=0, column=3, sticky=tk.W, pady=(8, 2))
-        ttk.Label(environment, text="草稿目录").grid(row=1, column=0, sticky=tk.W, padx=(10, 8), pady=(2, 8))
-        ttk.Label(environment, textvariable=self.draft_dir_var).grid(
-            row=1,
-            column=1,
-            columnspan=3,
-            sticky=tk.EW,
-            pady=(2, 8),
+    # ------------------------------------------------------------------
+    # Build UI
+    # ------------------------------------------------------------------
+
+    def _build(self) -> None:
+        tb = self.tb
+        root_frame = tb.Frame(self.root, padding=12)
+        root_frame.pack(fill="both", expand=True)
+
+        # ── Header bar ──
+        header = tb.Frame(root_frame)
+        header.pack(fill="x", pady=(0, 8))
+        tb.Label(header, text="剪映缓存提取工具", font=("", 16, "bold"), bootstyle="inverse-primary").pack(side="left")
+        tb.Label(header, text=APP_VERSION, font=("", 10), bootstyle="secondary").pack(side="left", padx=(8, 0), pady=(4, 0))
+        self.help_toggle = tb.Button(
+            header, text="使用说明 ▼", command=self._toggle_help,
+            bootstyle="secondary-outline", width=12,
+        )
+        self.help_toggle.pack(side="right")
+
+        # ── Help / instructions (collapsible, default open) ──
+        self.help_visible = True
+        self.help_frame = tb.Frame(root_frame)
+        self.help_frame.pack(fill="x", pady=(0, 8))
+        help_text = tk.Text(
+            self.help_frame, height=10, wrap="word", font=("", 10),
+            background="#1a1a2e", foreground="#c8c8d4", relief="flat",
+            padx=12, pady=8, borderwidth=0,
+        )
+        help_text.insert("1.0", USAGE_INSTRUCTIONS)
+        help_text.config(state="disabled")
+        help_text.pack(fill="x")
+
+        # ── Environment info ──
+        env_frame = tb.Labelframe(root_frame, text=" 环境信息 ", padding=8)
+        env_frame.pack(fill="x", pady=(0, 6))
+        env_frame.columnconfigure(1, weight=1)
+        env_frame.columnconfigure(3, weight=1)
+
+        tb.Label(env_frame, text="剪映状态").grid(row=0, column=0, sticky="w", padx=(0, 6))
+        self.process_badge = tk.Label(
+            env_frame, textvariable=self.process_var,
+            padx=8, pady=2, font=("", 9, "bold"), relief="groove", bd=1,
+        )
+        self.process_badge.grid(row=0, column=1, sticky="w")
+        tb.Label(env_frame, text="版本").grid(row=0, column=2, sticky="w", padx=(16, 6))
+        tb.Label(env_frame, textvariable=self.version_var).grid(row=0, column=3, sticky="w")
+        tb.Label(env_frame, text="草稿目录").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(4, 0))
+        tb.Label(env_frame, textvariable=self.draft_dir_var, bootstyle="secondary").grid(
+            row=1, column=1, columnspan=3, sticky="ew", pady=(4, 0),
         )
 
-        source_group = ttk.LabelFrame(root, text="1. 选择来源")
-        source_group.pack(fill=tk.X, pady=(10, 8))
-        mode_bar = ttk.Frame(source_group)
-        mode_bar.pack(fill=tk.X, padx=10, pady=(8, 4))
-        self.mode_buttons: list[ttk.Radiobutton] = []
-        for mode, label in (
-            (SourceMode.AUTO, "自动识别"),
-            (SourceMode.PROJECT, "选择项目"),
-            (SourceMode.MP4, "选择 MP4"),
-        ):
-            button = ttk.Radiobutton(
-                mode_bar,
-                text=label,
-                value=mode.value,
-                variable=self.mode_var,
-                command=self.on_mode_changed,
-            )
-            button.pack(side=tk.LEFT, padx=(0, 12))
-            self.mode_buttons.append(button)
-        ttk.Label(source_group, textvariable=self.mode_help_var, foreground="#4b5563").pack(
-            fill=tk.X,
-            padx=10,
-            pady=(0, 8),
+        # ── Project selection ──
+        proj_frame = tb.Labelframe(root_frame, text=" 项目选择 ", padding=8)
+        proj_frame.pack(fill="x", pady=(0, 6))
+
+        combo_row = tb.Frame(proj_frame)
+        combo_row.pack(fill="x")
+        combo_row.columnconfigure(0, weight=1)
+        self.project_combo = tb.Combobox(
+            combo_row, textvariable=tk.StringVar(), state="readonly"
+        )
+        self.project_combo.grid(row=0, column=0, sticky="ew")
+        self.project_combo.bind("<<ComboboxSelected>>", lambda _: self._on_project_selected())
+        tb.Button(combo_row, text="重新检测", command=self._refresh_projects, bootstyle="secondary-outline").grid(
+            row=0, column=1, padx=(8, 0),
         )
 
-        self.source_frame = ttk.Frame(source_group)
-        self.source_frame.pack(fill=tk.X, padx=10, pady=(0, 10))
-        self.auto_frame = ttk.Frame(self.source_frame)
-        ttk.Label(self.auto_frame, text="来源").pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Label(self.auto_frame, textvariable=self.source_var).pack(side=tk.LEFT)
+        self.confirm_var = tk.BooleanVar(value=False)
+        tb.Checkbutton(
+            proj_frame, text="我已打开该项目编辑界面",
+            variable=self.confirm_var, command=self._on_confirm_changed,
+        ).pack(anchor="w", pady=(6, 0))
 
-        self.project_frame = ttk.Frame(self.source_frame)
-        self.project_entry = ttk.Entry(self.project_frame, textvariable=self.project_path_var)
-        self.project_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.project_button = ttk.Button(self.project_frame, text="选择项目", command=self.choose_project)
-        self.project_button.pack(side=tk.LEFT, padx=(8, 0))
+        # ── Cache video list ──
+        cand_frame = tb.Labelframe(root_frame, text=" 缓存视频 ", padding=8)
+        cand_frame.pack(fill="both", expand=True, pady=(0, 6))
 
-        self.mp4_frame = ttk.Frame(self.source_frame)
-        self.mp4_entry = ttk.Entry(self.mp4_frame, textvariable=self.mp4_path_var)
-        self.mp4_entry.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.mp4_button = ttk.Button(self.mp4_frame, text="选择 MP4", command=self.choose_mp4)
-        self.mp4_button.pack(side=tk.LEFT, padx=(8, 0))
+        columns = ("name", "size", "resolution", "duration", "status")
+        tree_area = tb.Frame(cand_frame)
+        tree_area.pack(fill="both", expand=True)
 
-        status_bar = ttk.Frame(source_group)
-        status_bar.pack(fill=tk.X, padx=10, pady=(0, 10))
-        ttk.Label(status_bar, text="阶段").pack(side=tk.LEFT)
-        self.phase_badge = tk.Label(status_bar, textvariable=self.phase_var, padx=8, pady=2)
-        self.phase_badge.pack(side=tk.LEFT, padx=(8, 12))
-        ttk.Label(status_bar, textvariable=self.status_var).pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self.progress = ttk.Progressbar(status_bar, mode="indeterminate", length=120)
-        self.progress.pack(side=tk.RIGHT)
+        self.tree = tb.Treeview(tree_area, columns=columns, show="headings", height=4, bootstyle="primary")
+        self.tree.tag_configure("available", foreground="#22c55e")
+        self.tree.tag_configure("writing", foreground="#f59e0b")
+        self.tree.tag_configure("rejected", foreground="#94a3b8")
 
-        candidates_group = ttk.LabelFrame(root, text="2. 选择缓存视频")
-        candidates_group.pack(fill=tk.BOTH, expand=True, pady=(0, 8))
-        ttk.Label(candidates_group, textvariable=self.empty_var, foreground="#6b7280").pack(
-            fill=tk.X,
-            padx=10,
-            pady=(8, 4),
-        )
-        columns = ("name", "origin", "size", "duration", "resolution", "modified", "status", "path")
-        tree_area = ttk.Frame(candidates_group)
-        tree_area.pack(fill=tk.BOTH, expand=True, padx=10)
-        self.tree = ttk.Treeview(tree_area, columns=columns, show="headings", height=8)
-        self.tree.tag_configure("available", foreground="#0f7b33")
-        self.tree.tag_configure("writing", foreground="#a16207")
-        self.tree.tag_configure("rejected", foreground="#6b7280")
-        headings = {
-            "name": "缓存文件",
-            "origin": "来源",
-            "size": "大小",
-            "duration": "时长",
-            "resolution": "分辨率",
-            "modified": "修改时间",
-            "status": "状态",
-            "path": "路径",
-        }
-        widths = {
-            "name": 230,
-            "origin": 110,
-            "size": 90,
-            "duration": 80,
-            "resolution": 90,
-            "modified": 150,
-            "status": 110,
-            "path": 0,
-        }
-        for column in columns:
-            self.tree.heading(column, text=headings[column])
-            self.tree.column(
-                column,
-                width=widths[column],
-                minwidth=0 if column == "path" else 20,
-                stretch=column != "path",
-                anchor=tk.W,
-            )
-        scrollbar = ttk.Scrollbar(tree_area, orient=tk.VERTICAL, command=self.tree.yview)
+        headings = {"name": "缓存文件", "size": "大小", "resolution": "分辨率", "duration": "时长", "status": "状态"}
+        widths = {"name": 300, "size": 90, "resolution": 110, "duration": 90, "status": 140}
+        for col in columns:
+            self.tree.heading(col, text=headings[col])
+            self.tree.column(col, width=widths[col], minwidth=20, stretch=(col == "name"))
+        scrollbar = tb.Scrollbar(tree_area, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=scrollbar.set)
-        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        self.tree.bind("<<TreeviewSelect>>", self.on_candidate_selected)
+        self.tree.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", self._on_candidate_selected)
 
-        ttk.Label(candidates_group, textvariable=self.selected_var).pack(fill=tk.X, padx=10, pady=(8, 2))
-        ttk.Label(candidates_group, textvariable=self.selected_path_var, foreground="#6b7280").pack(
-            fill=tk.X,
-            padx=10,
-            pady=(0, 8),
+        self.selected_label = tb.Label(cand_frame, textvariable=self.selected_var, bootstyle="secondary")
+        self.selected_label.pack(fill="x", pady=(6, 0))
+
+        # ── Three-step actions ──
+        act_frame = tb.Labelframe(root_frame, text=" 三步操作 ", padding=8)
+        act_frame.pack(fill="x", pady=(0, 6))
+        act_frame.columnconfigure(1, weight=1)
+        act_frame.columnconfigure(5, weight=1)
+
+        # Row 0: draft name + scan + create
+        tb.Label(act_frame, text="草稿名").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=(0, 4))
+        tb.Entry(act_frame, textvariable=self.draft_name_var).grid(row=0, column=1, sticky="ew", pady=(0, 4))
+        self.scan_btn = tb.Button(act_frame, text="扫描缓存", command=self._on_scan, bootstyle="primary-outline", width=10)
+        self.scan_btn.grid(row=0, column=2, padx=(8, 0), pady=(0, 4))
+        self.create_btn = tb.Button(act_frame, text="创建剪映草稿", command=self._on_create_draft, bootstyle="success", width=12, state="disabled")
+        self.create_btn.grid(row=0, column=3, padx=(8, 0), pady=(0, 4))
+
+        # Row 1: hotkey + compound + uncompose
+        tb.Label(act_frame, text="快捷键").grid(row=1, column=0, sticky="w", padx=(0, 6), pady=(4, 4))
+        self.hotkey_capture = HotkeyCapture(act_frame)
+        self.hotkey_capture.grid(row=1, column=1, sticky="w", pady=(4, 4))
+        self.compound_btn = tb.Button(act_frame, text="① 一键复合片段", command=self._on_compound, bootstyle="info-outline", width=14, state="disabled")
+        self.compound_btn.grid(row=1, column=2, padx=(8, 0), pady=(4, 4))
+        self.uncompose_btn = tb.Button(act_frame, text="解除复合片段", command=self._on_uncompose, bootstyle="secondary-outline", width=10, state="disabled")
+        self.uncompose_btn.grid(row=1, column=3, padx=(8, 0), pady=(4, 4))
+
+        # Row 2: phase badge + restart + import + tracked
+        self.phase_badge = tk.Label(
+            act_frame, textvariable=self.phase_var,
+            padx=8, pady=2, font=("", 9, "bold"), relief="groove", bd=1,
+        )
+        self.phase_badge.grid(row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        self.restart_btn = tb.Button(act_frame, text="② 重启剪映", command=self._on_restart, bootstyle="warning-outline", width=12, state="disabled")
+        self.restart_btn.grid(row=2, column=2, padx=(8, 0), pady=(4, 0))
+        self.import_btn = tb.Button(act_frame, text="③ 一键导入", command=self._on_import, bootstyle="success", width=10, state="disabled")
+        self.import_btn.grid(row=2, column=3, padx=(8, 0), pady=(4, 0))
+        self.tracked_label = tb.Label(act_frame, textvariable=self.tracked_var, bootstyle="secondary", font=("", 9))
+        self.tracked_label.grid(row=2, column=4, columnspan=2, sticky="w", padx=(8, 0), pady=(4, 0))
+
+        # ── Result ──
+        res_frame = tb.Labelframe(root_frame, text=" 创建结果 ", padding=8)
+        res_frame.pack(fill="x", pady=(0, 6))
+        res_frame.columnconfigure(1, weight=1)
+
+        self.result_var = tk.StringVar(value="")
+        tb.Label(res_frame, textvariable=self.result_var, font=("", 10, "bold")).grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 4),
+        )
+        tb.Label(res_frame, text="草稿名").grid(row=1, column=0, sticky="w", padx=(0, 6))
+        tb.Label(res_frame, textvariable=self.created_name_var).grid(row=1, column=1, sticky="w")
+        tb.Label(res_frame, text="草稿路径").grid(row=2, column=0, sticky="w", padx=(0, 6), pady=(4, 0))
+        tb.Label(res_frame, textvariable=self.created_path_var).grid(
+            row=2, column=1, columnspan=3, sticky="ew", pady=(4, 0),
         )
 
-        create_group = ttk.LabelFrame(root, text="3. 创建剪映草稿")
-        create_group.pack(fill=tk.X, pady=(0, 8))
-        create_group.columnconfigure(1, weight=1)
-        ttk.Label(create_group, text="草稿名前缀").grid(row=0, column=0, sticky=tk.W, padx=(10, 8), pady=10)
-        self.output_name_entry = ttk.Entry(create_group, textvariable=self.source_name_var)
-        self.output_name_entry.grid(row=0, column=1, sticky=tk.EW, pady=10)
-        self.scan_button = ttk.Button(create_group, text="重新检测", command=self.scan_current_source)
-        self.scan_button.grid(row=0, column=2, padx=(10, 0), pady=10)
-        self.create_button = ttk.Button(
-            create_group,
-            text="创建剪映草稿",
-            command=self.create_selected,
-            state=tk.DISABLED,
+        btn_row = tb.Frame(res_frame)
+        btn_row.grid(row=3, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        self.open_dir_btn = tb.Button(
+            btn_row, text="打开草稿目录", command=self._open_created_dir,
+            bootstyle="secondary-outline", state="disabled",
         )
-        self.create_button.grid(row=0, column=3, padx=10, pady=10)
+        self.open_dir_btn.pack(side="left", padx=(0, 8))
 
-        result_group = ttk.LabelFrame(root, text="创建结果")
-        result_group.pack(fill=tk.X, pady=(0, 8))
-        result_group.columnconfigure(1, weight=1)
-        ttk.Label(result_group, textvariable=self.created_var, font=("", 10, "bold")).grid(
-            row=0,
-            column=0,
-            columnspan=4,
-            sticky=tk.W,
-            padx=10,
-            pady=(8, 4),
+        # ── Diagnostics log (collapsible) ──
+        log_toggle_row = tb.Frame(root_frame)
+        log_toggle_row.pack(fill="x")
+        self.log_visible = False
+        self.log_toggle_btn = tb.Button(
+            log_toggle_row, text="▶ 诊断日志", command=self._toggle_log,
+            bootstyle="secondary-outline",
         )
-        ttk.Label(result_group, text="草稿名").grid(row=1, column=0, sticky=tk.W, padx=(10, 8), pady=2)
-        ttk.Label(result_group, textvariable=self.result_name_var).grid(row=1, column=1, sticky=tk.W, pady=2)
-        ttk.Label(result_group, text="复制校验").grid(row=1, column=2, sticky=tk.W, padx=(18, 8), pady=2)
-        ttk.Label(result_group, textvariable=self.result_verify_var).grid(row=1, column=3, sticky=tk.W, pady=2)
-        ttk.Label(result_group, text="草稿路径").grid(row=2, column=0, sticky=tk.W, padx=(10, 8), pady=(2, 8))
-        ttk.Label(result_group, textvariable=self.result_path_var).grid(
-            row=2,
-            column=1,
-            columnspan=3,
-            sticky=tk.EW,
-            pady=(2, 8),
-        )
-        self.open_button = ttk.Button(result_group, text="打开草稿目录", command=self.open_created_dir, state=tk.DISABLED)
-        self.open_button.grid(row=3, column=0, padx=(10, 8), pady=(0, 10), sticky=tk.W)
-        self.confirm_button = ttk.Button(
-            result_group,
-            text="我已在剪映确认可打开",
-            command=self.confirm_user_verified,
-            state=tk.DISABLED,
-        )
-        self.confirm_button.grid(row=3, column=1, pady=(0, 10), sticky=tk.W)
+        self.log_toggle_btn.pack(side="left")
 
-        diagnostics_header = ttk.Frame(root)
-        diagnostics_header.pack(fill=tk.X)
-        self.log_toggle_button = ttk.Button(diagnostics_header, text="显示诊断日志", command=self.toggle_log)
-        self.log_toggle_button.pack(side=tk.LEFT)
-        self.log_frame = ttk.LabelFrame(root, text="诊断日志")
-        self.log = tk.Text(self.log_frame, height=6, wrap=tk.WORD)
-        self.log.pack(fill=tk.BOTH, expand=False, padx=8, pady=8)
+        self.log_frame = tb.Labelframe(root_frame, text=" 诊断日志 ", padding=4)
+        self.log_text = tk.Text(self.log_frame, height=5, wrap="word", font=("Consolas", 9))
 
-        self.on_mode_changed()
+    # ------------------------------------------------------------------
+    # Help toggle
+    # ------------------------------------------------------------------
 
-    def on_mode_changed(self) -> None:
-        if self._is_scanning or self._is_creating:
-            return
-        for frame in (self.auto_frame, self.project_frame, self.mp4_frame):
-            frame.pack_forget()
-        mode = SourceMode(self.mode_var.get())
-        if mode == SourceMode.AUTO:
-            self.auto_frame.pack(fill=tk.X)
-        elif mode == SourceMode.PROJECT:
-            self.project_frame.pack(fill=tk.X)
+    def _toggle_help(self) -> None:
+        if self.help_visible:
+            self.help_frame.pack_forget()
+            self.help_toggle.configure(text="使用说明 ▼")
+            self.help_visible = False
         else:
-            self.mp4_frame.pack(fill=tk.X)
-        self.mode_help_var.set(MODE_HELP_TEXT[mode])
-        self.clear_candidates()
+            self.help_frame.pack(fill="x", pady=(0, 8), after=self.root.winfo_children()[0])
+            self.help_toggle.configure(text="使用说明 ▲")
+            self.help_visible = True
 
-    def refresh_environment(self) -> None:
-        try:
-            info = self.env.detect()
-            self.draft_dir_var.set(str(info.draft_dir))
-            process_status = self.process.status().value
-            self.process_var.set(PROCESS_LABELS.get(process_status, process_status))
-            self._set_badge(self.process_badge, self._process_tone(process_status))
-        except Exception as exc:
-            self.draft_dir_var.set("-")
-            self.process_var.set("未检测到")
-            self._set_badge(self.process_badge, "error")
-            self.append_log(f"环境检测失败: {safe_error_message(exc)}")
+    # ------------------------------------------------------------------
+    # Log toggle
+    # ------------------------------------------------------------------
 
-    def choose_project(self) -> None:
-        path = filedialog.askdirectory(title="选择剪映项目目录")
-        if path:
-            self.project_path_var.set(path)
-            self.scan_current_source()
+    def _toggle_log(self) -> None:
+        if self.log_visible:
+            self.log_text.pack_forget()
+            self.log_frame.pack_forget()
+            self.log_toggle_btn.configure(text="▶ 诊断日志")
+            self.log_visible = False
+        else:
+            self.log_frame.pack(fill="x", pady=(4, 0))
+            self.log_text.pack(fill="both")
+            self.log_toggle_btn.configure(text="▼ 诊断日志")
+            self.log_visible = True
 
-    def choose_mp4(self) -> None:
-        path = filedialog.askopenfilename(title="选择 MP4", filetypes=[("MP4", "*.mp4"), ("All files", "*.*")])
-        if path:
-            self.mp4_path_var.set(path)
-            if not self.source_name_var.get().strip():
-                self.source_name_var.set(Path(path).stem)
-            self.scan_current_source()
+    def _log(self, message: str) -> None:
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        self.log_text.insert("end", f"[{timestamp}] {message}\n")
+        self.log_text.see("end")
+        if not self.log_visible:
+            self._toggle_log()
 
-    def append_log(self, message: str) -> None:
-        self.log.insert(tk.END, message + "\n")
-        self.log.see(tk.END)
+    # ------------------------------------------------------------------
+    # Badge updates
+    # ------------------------------------------------------------------
 
-    def clear_candidates(self) -> None:
+    def _update_process_badge(self) -> None:
+        label = PROCESS_LABELS.get(self.state.process_status.value, self.state.process_status.value)
+        self.process_var.set(label)
+        style = _badge_style(_process_tone(self.state.process_status))
+        self.process_badge.configure(**style)
+
+    def _update_phase_badge(self) -> None:
+        label = PHASE_LABELS.get(self.state.workflow_phase, "准备中")
+        self.phase_var.set(label)
+        style = _badge_style(_phase_tone(self.state.workflow_phase))
+        self.phase_badge.configure(**style)
+
+    # ------------------------------------------------------------------
+    # Tree helpers
+    # ------------------------------------------------------------------
+
+    def _populate_tree(self, files: list) -> None:
         self.tree.delete(*self.tree.get_children())
-        self.candidates = []
-        self._candidate_by_iid = {}
-        self.source = None
-        self.source_var.set("-")
-        self.selected_var.set(candidate_summary(None))
-        self.selected_path_var.set("-")
-        self.empty_var.set("")
-        self.create_button.configure(state=tk.DISABLED)
+        self._candidate_by_iid.clear()
 
-    def current_request(self, *, selected_media_path: Path | None = None) -> CreateDraftRequest:
-        mode = SourceMode(self.mode_var.get())
-        project_path = Path(self.project_path_var.get()) if self.project_path_var.get().strip() else None
-        mp4_path = Path(self.mp4_path_var.get()) if self.mp4_path_var.get().strip() else None
-        return build_request(
-            mode,
-            project_path=project_path,
-            mp4_path=mp4_path,
-            source_name=self.source_name_var.get().strip() or None,
-            selected_media_path=selected_media_path,
-        )
+        for f in files:
+            path = f if isinstance(f, Path) else getattr(f, "path", None)
+            if path is None:
+                continue
 
-    def scan_current_source(self) -> None:
-        if self._is_scanning or self._is_creating:
+            inspection = inspect_private_cache(path)
+            display_text = _classification_display(inspection.status, inspection.reason, self.state.workflow_phase)
+            tag = _classification_tag(inspection.status, self.state.workflow_phase)
+
+            iid = self.tree.insert("", "end", values=(
+                path.name,
+                human_size(inspection.size_bytes),
+                resolution_label(inspection.width, inspection.height),
+                human_duration(inspection.duration_ms),
+                display_text,
+            ), tags=(tag,))
+            self._candidate_by_iid[iid] = inspection
+
+    def _on_candidate_selected(self, _event: tk.Event | None = None) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            self.selected_var.set("")
             return
-        self.refresh_environment()
-        self.clear_candidates()
-        self.created = None
-        self.phase_var.set("检测中")
-        self._set_badge(self.phase_badge, "busy")
-        self.status_var.set("正在检测缓存视频...")
-        self.created_var.set("")
-        self.result_name_var.set("-")
-        self.result_path_var.set("-")
-        self.result_verify_var.set("-")
-        self.open_button.configure(state=tk.DISABLED)
-        self.confirm_button.configure(state=tk.DISABLED)
-        self._set_busy("scan")
+        item = sel[0]
+        values = self.tree.item(item, "values")
+        if values:
+            name = values[0]
+            size = values[1]
+            res = values[2]
+            dur = values[3]
+            self.selected_var.set(f"已选择: {name}  ({size}, {res}, {dur})")
+        else:
+            self.selected_var.set("")
 
+    # ------------------------------------------------------------------
+    # Environment & process
+    # ------------------------------------------------------------------
+
+    def _refresh_environment_and_projects(self) -> None:
+        def work() -> None:
+            try:
+                self.env.detect()
+                info = self.env.info
+                self.events.put(("env", info))
+                drafts = detect_recent_drafts(info.draft_dir)
+                self.events.put(("projects", drafts))
+            except Exception as exc:
+                self.events.put(("error", str(exc)))
+
+        self._run_background(work)
+
+    def _refresh_projects(self) -> None:
+        def work() -> None:
+            try:
+                info = self.env.info
+                drafts = detect_recent_drafts(info.draft_dir)
+                self.events.put(("projects", drafts))
+            except Exception as exc:
+                self.events.put(("error", str(exc)))
+
+        self._run_background(work)
+
+    def _refresh_process_status(self) -> None:
         try:
-            request = self.current_request()
-        except Exception as exc:
-            self._scan_failed(exc)
+            self.state.process_status = self.process.status()
+            self._update_process_badge()
+            self._apply_button_states()
+        finally:
+            self.root.after(3000, self._refresh_process_status)
+
+    # ------------------------------------------------------------------
+    # UI event handlers
+    # ------------------------------------------------------------------
+
+    def _on_project_selected(self) -> None:
+        index = self.project_combo.current()
+        if 0 <= index < len(self.drafts):
+            self.state.selected_project_path = self.drafts[index].path
+            self.state.tracked_mp4_path = None
+            self.state.workflow_phase = WorkflowPhase.IDLE
+            self.tracked_var.set("")
+            self._update_phase_badge()
+            self._log(f"已选择项目: {self.drafts[index].name}")
+            self._on_scan()
+        self._apply_button_states()
+
+    def _on_confirm_changed(self) -> None:
+        self.state.opened_project_confirmed = bool(self.confirm_var.get())
+        self._apply_button_states()
+
+    def _on_scan(self) -> None:
+        project = self.state.selected_project_path
+        if project is None:
             return
 
-        def worker() -> None:
+        def work() -> None:
+            files = find_combination_mp4s(project, require_video=False, recent_seconds=None)
+            self.events.put(("scan", files))
+
+        self._log("正在扫描缓存文件...")
+        self._run_background(work)
+
+    def _on_compound(self) -> None:
+        project = self.state.selected_project_path
+        if project is None:
+            return
+        hotkey = self.hotkey_capture.get_internal()
+
+        def work() -> None:
+            result = run_compound_clip_sequence(hotkey)
+            latest = scan_latest_cache(project, require_video=False)
+            self.events.put(("compound", (result, latest)))
+
+        self._run_background(work)
+
+    def _on_uncompose(self) -> None:
+        self._run_background(lambda: self.events.put(("uncompose", run_uncompose_clip_sequence())))
+
+    def _on_restart(self) -> None:
+        from .private_prepare import restart_jianying_for_import
+
+        def work() -> None:
+            self.events.put(("restart", restart_jianying_for_import(process=self.process)))
+
+        self._run_background(work)
+
+    def _on_import(self) -> None:
+        path = self.state.tracked_mp4_path
+        if path is None:
+            return
+        self._run_background(lambda: self.events.put(("import", auto_import_file(path))))
+
+    def _on_create_draft(self) -> None:
+        path = self.state.tracked_mp4_path
+        if path is None:
+            return
+        name = self.draft_name_var.get() or path.stem
+
+        def work() -> None:
+            inspection = inspect_private_cache(path)
+            if inspection.status == "private_importable":
+                created = create_private_cache_draft(self.env.info.draft_dir, path, name)
+            else:
+                created = create_extracted_draft(self.env.info.draft_dir, path, name)
+            self.events.put(("created", created.draft_path))
+
+        self._run_background(work)
+
+    def _open_created_dir(self) -> None:
+        if self.created_draft_path and self.created_draft_path.exists():
+            import subprocess
+            subprocess.Popen(["explorer", str(self.created_draft_path)])
+
+    # ------------------------------------------------------------------
+    # Threading
+    # ------------------------------------------------------------------
+
+    def _run_background(self, target: Callable[[], None]) -> None:
+        if self.state.busy:
+            return
+        self.state.busy = True
+        self._apply_button_states()
+
+        def wrapped() -> None:
             try:
-                info = self.env.detect()
-                source = scan_source(request, draft_root=info.draft_dir, env=self.env, process=self.process)
+                target()
             except Exception as exc:
-                self._post_ui(lambda exc=exc: self._scan_failed(exc))
-                return
-            self._post_ui(lambda source=source: self._scan_done(source))
+                self.events.put(("error", str(exc)))
+            finally:
+                self.events.put(("idle", None))
 
-        threading.Thread(target=worker, daemon=True).start()
+        threading.Thread(target=wrapped, daemon=True).start()
 
-    def _scan_done(self, source: ResolvedSource) -> None:
-        self.source = source
-        self.candidates = sort_candidates_for_display(source.candidates)
-        self.source_var.set(source.source_name)
-        if source.mode != SourceMode.MP4 or not self.source_name_var.get().strip():
-            self.source_name_var.set(source.source_name)
-        self.last_scan_var.set(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
-        for index, candidate in enumerate(self.candidates):
-            iid = str(index)
-            self._candidate_by_iid[iid] = candidate
-            self.tree.insert("", tk.END, iid=iid, values=candidate_row(candidate), tags=(candidate_tag(candidate),))
-        available = [candidate for candidate in self.candidates if candidate.status == CandidateStatus.AVAILABLE]
-        if available:
-            first_available = self.candidates.index(available[0])
-            self.tree.selection_set(str(first_available))
-            self.tree.focus(str(first_available))
-            self.tree.see(str(first_available))
-            self.on_candidate_selected()
-            self.create_button.configure(state=tk.NORMAL)
-            self.phase_var.set("可创建")
-            self._set_badge(self.phase_badge, "ok")
-            self.status_var.set(status_label("detected"))
-            self.empty_var.set("")
-        else:
-            self.create_button.configure(state=tk.DISABLED)
-            message = empty_state_message(self.mode_var.get(), self.candidates)
-            self.phase_var.set("未找到")
-            self._set_badge(self.phase_badge, "muted")
-            self.status_var.set("没有可创建草稿的候选视频。")
-            self.empty_var.set(message)
-            self.selected_var.set(candidate_summary(None))
-            self.selected_path_var.set("-")
-        self._set_busy(None)
-        self.append_log(f"已检测: {source.source_name}; 可用 {len(available)} / 总数 {len(self.candidates)}")
-
-    def _scan_failed(self, exc: Exception) -> None:
-        self._set_busy(None)
-        self.create_button.configure(state=tk.DISABLED)
-        process_status = self.process.status().value
-        self.process_var.set(PROCESS_LABELS.get(process_status, process_status))
-        self._set_badge(self.process_badge, self._process_tone(process_status))
-        message = (
-            empty_state_message(self.mode_var.get(), error_code=exc.code, process_status=process_status)
-            if isinstance(exc, WorkflowError)
-            else safe_error_message(exc)
-        )
-        self.phase_var.set("失败")
-        self._set_badge(self.phase_badge, "error")
-        self.status_var.set("检测失败。")
-        self.empty_var.set(message)
-        self.selected_var.set(candidate_summary(None))
-        self.selected_path_var.set("-")
-        self.append_log(f"检测失败: {message}")
-
-    def selected_candidate(self) -> MediaCandidate | None:
-        selection = self.tree.selection()
-        if selection:
-            candidate = self._candidate_by_iid[selection[0]]
-            return candidate if candidate.status == CandidateStatus.AVAILABLE else None
-        if self.source and self.source.available_candidates:
-            return self.source.available_candidates[0]
-        return None
-
-    def on_candidate_selected(self, _event=None) -> None:
-        selection = self.tree.selection()
-        if not selection:
-            self.selected_var.set(candidate_summary(None))
-            self.selected_path_var.set("-")
-            self.create_button.configure(state=tk.DISABLED)
-            return
-        candidate = self._candidate_by_iid[selection[0]]
-        self.selected_var.set(candidate_summary(candidate))
-        self.selected_path_var.set(f"路径：{candidate.path}")
-        self.create_button.configure(state=tk.NORMAL if candidate.status == CandidateStatus.AVAILABLE else tk.DISABLED)
-
-    def create_selected(self) -> None:
-        candidate = self.selected_candidate()
-        if candidate is None:
-            messagebox.showwarning("未选择视频", "请先选择一个可用视频。")
-            return
-
-        self._set_busy("create")
-        self.phase_var.set("创建中")
-        self._set_badge(self.phase_badge, "busy")
-        self.status_var.set(status_label("creating"))
-        self.empty_var.set("")
-        self.append_log(f"开始创建草稿: {candidate.path}")
-        request = self.current_request(selected_media_path=candidate.path)
-
-        def worker() -> None:
-            try:
-                info = self.env.detect()
-                result = create_draft_from_source(request, draft_root=info.draft_dir, env=self.env, process=self.process)
-            except Exception as exc:
-                self._post_ui(lambda exc=exc: self._create_failed(exc))
-                return
-            self._post_ui(lambda result=result: self._create_done(result.created_draft))
-
-        threading.Thread(target=worker, daemon=True).start()
-
-    def _create_done(self, created: CreatedDraft | None) -> None:
-        if created is None:
-            self._create_failed(RuntimeError("草稿创建结果为空"))
-            return
-        self.created = created
-        self._set_busy(None)
-        self.create_button.configure(state=tk.NORMAL)
-        self.open_button.configure(state=tk.NORMAL)
-        self.confirm_button.configure(state=tk.NORMAL)
-        self.phase_var.set("已创建")
-        self._set_badge(self.phase_badge, "ok")
-        self.status_var.set(status_label("draft_created"))
-        self.created_var.set(f"{status_label('draft_created')} 请在剪映首页查找并确认。")
-        self.result_name_var.set(created.name)
-        self.result_path_var.set(str(created.draft_path))
-        self.result_verify_var.set("大小一致" if created.size_verified else "请检查")
-        self.append_log(f"草稿已创建，请回到剪映首页查看: {created.draft_path}")
-
-    def _create_failed(self, exc: Exception) -> None:
-        self._set_busy(None)
-        self.create_button.configure(state=tk.NORMAL if self.selected_candidate() else tk.DISABLED)
-        message = safe_error_message(exc)
-        self.phase_var.set("失败")
-        self._set_badge(self.phase_badge, "error")
-        self.status_var.set(status_label("failed"))
-        self.empty_var.set(message)
-        self.append_log(f"创建失败: {message}")
-        messagebox.showerror("创建失败", message)
-
-    def open_created_dir(self) -> None:
-        if self.created:
-            try:
-                os.startfile(str(self.created.draft_path))
-            except Exception as exc:
-                message = safe_error_message(exc)
-                self.status_var.set(status_label("failed"))
-                self.append_log(f"打开草稿目录失败: {message}")
-                messagebox.showerror("打开失败", message)
-
-    def confirm_user_verified(self) -> None:
-        if self.created:
-            self.phase_var.set("已确认")
-            self._set_badge(self.phase_badge, "ok")
-            self.status_var.set(status_label("user_verified_openable"))
-            self.append_log(status_label("user_verified_openable"))
-
-    def _set_busy(self, phase: str | None) -> None:
-        self._is_scanning = phase == "scan"
-        self._is_creating = phase == "create"
-        busy = phase is not None
-        self.scan_button.configure(text="检测中..." if phase == "scan" else "重新检测")
-        self.create_button.configure(text="创建中..." if phase == "create" else "创建剪映草稿")
-        if busy:
-            self.progress.start(10)
-        else:
-            self.progress.stop()
-
-        state = tk.DISABLED if busy else tk.NORMAL
-        self.scan_button.configure(state=state)
-        for button in self.mode_buttons:
-            button.configure(state=state)
-        for widget in (
-            self.project_entry,
-            self.project_button,
-            self.mp4_entry,
-            self.mp4_button,
-            self.output_name_entry,
-        ):
-            widget.configure(state=state)
-
-        if busy:
-            self.create_button.configure(state=tk.DISABLED)
-            self.open_button.configure(state=tk.DISABLED)
-            self.confirm_button.configure(state=tk.DISABLED)
-        elif self.selected_candidate():
-            self.create_button.configure(state=tk.NORMAL)
-
-    def _post_ui(self, callback) -> None:
-        self._ui_events.put(callback)
-
-    def _drain_ui_events(self) -> None:
+    def _drain_events(self) -> None:
         while True:
             try:
-                callback = self._ui_events.get_nowait()
+                event, payload = self.events.get_nowait()
             except queue.Empty:
                 break
-            callback()
-        self.after(50, self._drain_ui_events)
+            self._handle_event(event, payload)
+        self.root.after(50, self._drain_events)
 
-    def toggle_log(self) -> None:
-        if self.log_visible_var.get():
-            self.log_frame.pack_forget()
-            self.log_visible_var.set(False)
-            self.log_toggle_button.configure(text="显示诊断日志")
-        else:
-            self.log_frame.pack(fill=tk.BOTH, expand=False, pady=(6, 0))
-            self.log_visible_var.set(True)
-            self.log_toggle_button.configure(text="隐藏诊断日志")
+    # ------------------------------------------------------------------
+    # Event dispatch
+    # ------------------------------------------------------------------
 
-    def _set_badge(self, label: tk.Label, tone: str) -> None:
-        foreground, background = STATUS_COLORS.get(tone, STATUS_COLORS["muted"])
-        label.configure(foreground=foreground, background=background)
+    def _handle_event(self, event: str, payload: object) -> None:
+        if event == "idle":
+            self.state.busy = False
 
-    def _process_tone(self, process_status: str) -> str:
-        if process_status == "running":
-            return "ok"
-        if process_status in {"starting", "background", "tray_only"}:
-            return "busy"
-        if process_status == "not_installed":
-            return "error"
-        return "muted"
+        elif event == "env":
+            info = payload
+            self.version_var.set(getattr(info, "version", "-") or "-")
+            self.draft_dir_var.set(str(getattr(info, "draft_dir", "-")))
+            self._log(f"环境检测完成: {getattr(info, 'version', 'unknown')}")
+
+        elif event == "projects":
+            self.drafts = list(payload)  # type: ignore[arg-type]
+            self.project_combo["values"] = [d.name for d in self.drafts]
+            self._log(f"检测到 {len(self.drafts)} 个近 30 分钟项目。")
+            if self.drafts:
+                self.project_combo.current(0)
+                self._on_project_selected()
+
+        elif event == "scan":
+            files = payload
+            if isinstance(files, list):
+                self._populate_tree(files)
+                if files:
+                    latest = files[0]
+                    path = latest if isinstance(latest, Path) else getattr(latest, "path", None)
+                    if path:
+                        self._set_tracked(path)
+                        if not self.draft_name_var.get():
+                            stem = path.stem.replace("_video", "")
+                            self.draft_name_var.set(stem)
+                    self._log(f"扫描到 {len(files)} 个缓存文件。")
+                else:
+                    self._set_tracked(None)
+                    self._log("未找到缓存文件。")
+            else:
+                self._set_tracked(payload if isinstance(payload, Path) else None)
+
+        elif event == "compound":
+            result, latest = payload  # type: ignore[misc]
+            self._log(format_status_message("compound_sent", None))
+            if getattr(result, "status", "") == "sent":
+                self.state.workflow_phase = WorkflowPhase.COMPOSITE_DONE
+                self._update_phase_badge()
+            self._set_tracked(latest if isinstance(latest, Path) else None)
+
+        elif event == "uncompose":
+            self._log("已发送解除复合请求")
+
+        elif event == "restart":
+            result = payload
+            if getattr(result, "status", "") == "ready_for_manual_import":
+                self.state.workflow_phase = WorkflowPhase.RESTARTED
+                self.state.opened_project_confirmed = False
+                self.confirm_var.set(False)
+                self._update_phase_badge()
+                self._log(format_status_message("restart_ready", None))
+                self._on_scan()
+            else:
+                warnings = getattr(result, "warnings", [])
+                self._log(f"操作失败: {warnings[0] if warnings else '重启失败'}")
+
+        elif event == "import":
+            result = payload
+            if getattr(result, "status", "") == "sent":
+                self.state.workflow_phase = WorkflowPhase.IMPORTED
+                self._update_phase_badge()
+                self._log(format_status_message("import_sent", None))
+            else:
+                detail = getattr(result, "error_detail", "导入失败")
+                self._log(f"操作失败: {detail}")
+
+        elif event == "created":
+            path = payload
+            if isinstance(path, Path):
+                self.created_draft_path = path
+                self.result_var.set("✓ 草稿创建成功")
+                self.created_name_var.set(path.name)
+                self.created_path_var.set(str(path))
+                self.open_dir_btn.configure(state="normal")
+                self._log(f"已创建草稿: {path}")
+
+        elif event == "error":
+            self._log(f"操作失败: {payload}")
+
+        self._apply_button_states()
+
+    # ------------------------------------------------------------------
+    # Helpers
+    # ------------------------------------------------------------------
+
+    def _set_tracked(self, path: Path | None) -> None:
+        self.state.tracked_mp4_path = path
+        if path is None:
+            self.tracked_var.set("")
+            return
+        size = human_size(path.stat().st_size) if path.exists() else "?"
+        self.tracked_var.set(f"追踪: {path.name} ({size})")
+        self._log(format_status_message("cache_found", f"{path.name} ({size})"))
+
+    def _apply_button_states(self) -> None:
+        states = button_states(
+            process=self.state.process_status,
+            phase=self.state.workflow_phase,
+            selected_project=self.state.selected_project_path is not None,
+            confirmed_open=self.state.opened_project_confirmed,
+            tracked_mp4=self.state.tracked_mp4_path is not None,
+            busy=self.state.busy,
+        )
+        mapping = {
+            "scan": getattr(self, "scan_btn", None),
+            "create_draft": getattr(self, "create_btn", None),
+            "compound": getattr(self, "compound_btn", None),
+            "restart": getattr(self, "restart_btn", None),
+            "auto_import": getattr(self, "import_btn", None),
+            "uncompose": getattr(self, "uncompose_btn", None),
+        }
+        for key, button in mapping.items():
+            if button is not None:
+                button.configure(state="normal" if states[key] else "disabled")
 
 
 def main() -> None:
-    app = CacheExtractorApp()
-    app.mainloop()
+    app = JianYingApp()
+    app.run()
